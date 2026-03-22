@@ -274,15 +274,14 @@ button { font: inherit; }
 /* ===== Death Screen ===== */
 .death-screen {
   position: absolute; z-index: 20; inset: 0;
-  display: flex; flex-direction: column;
+  display: none; flex-direction: column;
   align-items: center; justify-content: center;
   gap: 1.2rem;
   background: rgb(100 0 0 / 0.62);
-  opacity: 0; pointer-events: none;
-  transition: opacity 500ms ease;
+  pointer-events: none;
 }
 
-.death-screen.visible { opacity: 1; pointer-events: auto; }
+.death-screen.visible { display: flex; pointer-events: auto; }
 
 .death-screen h1 {
   font-family: 'Audiowide', sans-serif;
@@ -313,11 +312,10 @@ button { font: inherit; }
   border: 3px solid rgb(40 40 40);
   border-radius: 4px;
   background: rgb(25 25 30 / 0.95);
-  opacity: 0; pointer-events: none;
-  transition: opacity 150ms ease;
+  display: none; pointer-events: none;
 }
 
-.inventory-panel.visible { opacity: 1; pointer-events: auto; }
+.inventory-panel.visible { display: block; pointer-events: auto; }
 
 .inv-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -505,14 +503,13 @@ button { font: inherit; }
 /* ===== Pause Menu ===== */
 .pause-menu {
   position: absolute; z-index: 18; inset: 0;
-  display: flex; flex-direction: column;
+  display: none; flex-direction: column;
   align-items: center; justify-content: center;
   gap: 0.6rem;
   background: rgb(0 0 0 / 0.6);
-  opacity: 0; pointer-events: none;
-  transition: opacity 200ms ease;
+  pointer-events: none;
 }
-.pause-menu.visible { opacity: 1; pointer-events: auto; }
+.pause-menu.visible { display: flex; pointer-events: auto; }
 .pause-menu h2 {
   font-family: 'Audiowide', sans-serif;
   font-size: 1.6rem; color: #ddd;
@@ -540,10 +537,9 @@ button { font: inherit; }
   border: 3px solid rgb(40 40 40);
   border-radius: 4px;
   background: rgb(20 20 25 / 0.96);
-  opacity: 0; pointer-events: none;
-  transition: opacity 150ms ease;
+  display: none; pointer-events: none;
 }
-.settings-panel.visible { opacity: 1; pointer-events: auto; }
+.settings-panel.visible { display: block; pointer-events: auto; }
 
 .settings-header {
   display: flex; justify-content: space-between; align-items: center;
