@@ -206,6 +206,42 @@ export class VoxelSandboxGame {
     this.renderer.dispose()
   }
 
+  /** True when any menu/overlay is open and gameplay should freeze. */
+  private isGamePaused(): boolean {
+    return this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
+      || (!this.survival.state.alive && this.settings.survival)
+      || (!this.player.isLocked && !this.input.isTouchMode())
+  }
+
+  /**
+   * Final authority on pointer lock and camera state. Runs RIGHT BEFORE
+   * render so nothing can modify the camera after this call.
+   * - Forces pointer unlock whenever any menu is open
+   * - Forces camera freeze (overwrites any PointerLockControls changes)
+   * - Toggles cursor CSS
+   */
+  private enforceMenuState(): void {
+    const menuOpen = this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
+      || (!this.survival.state.alive && this.settings.survival)
+      || !this.gameStarted
+
+    // Force pointer unlock — if pointer is locked while a menu is open,
+    // the user can't see or use their cursor.
+    if (menuOpen && document.pointerLockElement) {
+      document.exitPointerLock()
+    }
+
+    // Force camera freeze — PointerLockControls has its own mousemove
+    // listener that modifies camera.quaternion directly. We overwrite
+    // it here so the rendered frame always shows the frozen view.
+    if (menuOpen) {
+      this.camera.quaternion.copy(this.frozenCameraQuat)
+      this.camera.position.copy(this.frozenCameraPos)
+    }
+
+    this.mountNode.classList.toggle('menu-open', menuOpen)
+  }
+
   private readonly animate = (): void => {
     const now = performance.now()
     const dt = Math.min((now - this.lastFrameTime) / 1000, 0.05)
@@ -229,26 +265,15 @@ export class VoxelSandboxGame {
       }
     }
 
-    // ── Determine if gameplay is paused ──
-    const paused = !this.survival.state.alive
-      || this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
-      || (!this.player.isLocked && !this.input.isTouchMode())
+    // ── Pause state ──
+    const paused = this.isGamePaused()
 
-    // Freeze camera while paused — PointerLockControls modifies camera
-    // quaternion directly via its own mousemove listener, bypassing our
-    // game loop. We save the camera state on pause entry and restore it
-    // every frame to prevent any drift.
+    // Snapshot camera on pause entry
     if (paused && !this.wasPaused) {
-      // Just became paused — snapshot camera
       this.frozenCameraQuat.copy(this.camera.quaternion)
       this.frozenCameraPos.copy(this.camera.position)
     }
-    if (paused) {
-      this.camera.quaternion.copy(this.frozenCameraQuat)
-      this.camera.position.copy(this.frozenCameraPos)
-    }
     this.wasPaused = paused
-    this.mountNode.classList.toggle('menu-open', paused)
 
     if (!paused) {
       // ── Gameplay updates (only when active) ──
@@ -302,7 +327,7 @@ export class VoxelSandboxGame {
       this.applyBlockEditing(dt)
       this.effects.update(dt)
     } else {
-      // While paused, consume and discard gameplay inputs
+      // Discard all gameplay inputs while paused
       this.input.consumeSlotSelection()
       this.input.consumeCameraToggle()
       this.input.consumePrimaryAction()
@@ -311,8 +336,10 @@ export class VoxelSandboxGame {
 
     this.updateHud()
     this.input.endFrame()
-
     if (this.hurtFlashTimer > 0) this.hurtFlashTimer -= dt
+
+    // ── FINAL AUTHORITY: enforce correct state right before render ──
+    this.enforceMenuState()
 
     this.renderer.render(this.scene, this.camera)
     this.stats.end()
@@ -766,6 +793,10 @@ export class VoxelSandboxGame {
     }
 
     // Game was running, pointer released (Escape or focus loss)
+    // Snapshot camera immediately so enforceMenuState() can freeze it
+    this.frozenCameraQuat.copy(this.camera.quaternion)
+    this.frozenCameraPos.copy(this.camera.position)
+
     // Show pause menu unless settings, inventory, or death screen is open
     if (!this.settingsOpen && !this.inventoryOpen && this.survival.state.alive) {
       this.startCard.classList.add('hidden')
@@ -836,10 +867,16 @@ export class VoxelSandboxGame {
     this.inventoryPanel.classList.toggle('visible', this.inventoryOpen)
     if (this.inventoryOpen) {
       this.renderInventory()
-      if (!this.input.isTouchMode() && this.player.isLocked) this.player.controls.unlock()
+      this.frozenCameraQuat.copy(this.camera.quaternion)
+      this.frozenCameraPos.copy(this.camera.position)
+      // Force pointer free — enforceMenuState() also does this but we
+      // want immediate effect so the cursor is visible right away
+      if (document.pointerLockElement) document.exitPointerLock()
     } else {
       // Closing inventory — resume gameplay
-      if (!this.input.isTouchMode() && this.gameStarted) this.player.controls.lock()
+      if (!this.input.isTouchMode() && this.gameStarted) {
+        this.player.controls.lock()
+      }
     }
   }
 
@@ -906,10 +943,13 @@ export class VoxelSandboxGame {
   private handleDeath(): void {
     this.playSound('die')
     this.hurtFlashTimer = 1.0
+    this.frozenCameraQuat.copy(this.camera.quaternion)
+    this.frozenCameraPos.copy(this.camera.position)
     const scoreEl = this.deathScreen.querySelector('#death-score')
     if (scoreEl) scoreEl.textContent = Math.floor(this.runSeconds).toString()
-    // Unlock pointer so user can click Respawn
-    if (this.player.isLocked) this.player.controls.unlock()
+    // Force unlock so user can click Respawn — enforceMenuState() will
+    // also do this, but we do it here for immediate effect
+    if (document.pointerLockElement) document.exitPointerLock()
   }
 
   private handleRespawn(): void {
@@ -1064,6 +1104,9 @@ export class VoxelSandboxGame {
     this.pauseMenuOpen = false
     this.startCard.classList.add('hidden')
     this.settingsPanel.classList.add('visible')
+    this.frozenCameraQuat.copy(this.camera.quaternion)
+    this.frozenCameraPos.copy(this.camera.position)
+    if (document.pointerLockElement) document.exitPointerLock()
     this.renderSettings()
   }
 
