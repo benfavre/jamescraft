@@ -222,25 +222,22 @@ export class VoxelSandboxGame {
    * - Toggles cursor CSS
    */
   private enforceMenuState(): void {
+    // Only force-unlock for explicit menus — NOT for !gameStarted, because
+    // that would cancel the async requestPointerLock() from SINGLEPLAYER.
     const menuOpen = this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
       || (!this.survival.state.alive && this.settings.survival)
-      || !this.gameStarted
 
-    // Force pointer unlock — if pointer is locked while a menu is open,
-    // the user can't see or use their cursor.
     if (menuOpen && document.pointerLockElement) {
       document.exitPointerLock()
     }
 
-    // Force camera freeze — PointerLockControls has its own mousemove
-    // listener that modifies camera.quaternion directly. We overwrite
-    // it here so the rendered frame always shows the frozen view.
     if (menuOpen) {
       this.camera.quaternion.copy(this.frozenCameraQuat)
       this.camera.position.copy(this.frozenCameraPos)
     }
 
-    this.mountNode.classList.toggle('menu-open', menuOpen)
+    // CSS cursor: show default cursor when any menu OR start screen is up
+    this.mountNode.classList.toggle('menu-open', menuOpen || !this.gameStarted)
   }
 
   private readonly animate = (): void => {
