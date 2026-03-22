@@ -121,6 +121,9 @@ export class VoxelSandboxGame {
   private breakingBlock: THREE.Vector3 | null = null
   private hurtFlashTimer = 0
   private stepTimer = 0
+  private wasPaused = false
+  private readonly frozenCameraQuat = new THREE.Quaternion()
+  private readonly frozenCameraPos = new THREE.Vector3()
 
   constructor(private readonly mountNode: HTMLElement) {
     this.settings = loadSettings()
@@ -230,6 +233,22 @@ export class VoxelSandboxGame {
     const paused = !this.survival.state.alive
       || this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
       || (!this.player.isLocked && !this.input.isTouchMode())
+
+    // Freeze camera while paused — PointerLockControls modifies camera
+    // quaternion directly via its own mousemove listener, bypassing our
+    // game loop. We save the camera state on pause entry and restore it
+    // every frame to prevent any drift.
+    if (paused && !this.wasPaused) {
+      // Just became paused — snapshot camera
+      this.frozenCameraQuat.copy(this.camera.quaternion)
+      this.frozenCameraPos.copy(this.camera.position)
+    }
+    if (paused) {
+      this.camera.quaternion.copy(this.frozenCameraQuat)
+      this.camera.position.copy(this.frozenCameraPos)
+    }
+    this.wasPaused = paused
+    this.mountNode.classList.toggle('menu-open', paused)
 
     if (!paused) {
       // ── Gameplay updates (only when active) ──
