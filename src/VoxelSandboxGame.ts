@@ -223,8 +223,9 @@ export class VoxelSandboxGame {
     }
 
     // ── Determine if gameplay is paused ──
-    const paused = this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
-      || (!this.player.isLocked && this.gameStarted && !this.input.isTouchMode())
+    const paused = !this.survival.state.alive
+      || this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
+      || (!this.player.isLocked && !this.input.isTouchMode())
 
     if (!paused) {
       // ── Gameplay updates (only when active) ──
@@ -275,7 +276,7 @@ export class VoxelSandboxGame {
 
       this.updateTarget()
       this.updateGhostBlock()
-      this.applyBlockEditing()
+      this.applyBlockEditing(dt)
       this.effects.update(dt)
     } else {
       // While paused, consume and discard gameplay inputs
@@ -518,7 +519,7 @@ export class VoxelSandboxGame {
     this.sunLight.color.copy(sunColor)
   }
 
-  private applyBlockEditing(): void {
+  private applyBlockEditing(dt: number): void {
     if (!this.input.isInteractionEnabled(this.player.isLocked) || !this.currentTarget || !this.survival.state.alive) {
       this.input.consumePrimaryAction()
       this.input.consumeSecondaryAction()
@@ -554,7 +555,6 @@ export class VoxelSandboxGame {
         }
 
         const breakTime = Math.max(0.05, blockDef.hardness / toolSpeed)
-        const dt = Math.min((performance.now() - this.lastFrameTime) / 1000, 0.05) || 0.016
         this.breakProgress += dt / breakTime
 
         if (this.breakProgress >= 1) {
@@ -738,8 +738,8 @@ export class VoxelSandboxGame {
     }
 
     // Game was running, pointer released (Escape or focus loss)
-    // Show pause menu unless settings or inventory is already open
-    if (!this.settingsOpen && !this.inventoryOpen) {
+    // Show pause menu unless settings, inventory, or death screen is open
+    if (!this.settingsOpen && !this.inventoryOpen && this.survival.state.alive) {
       this.startCard.classList.add('hidden')
       this.pauseMenuOpen = true
       this.pauseMenu.classList.add('visible')
@@ -880,6 +880,8 @@ export class VoxelSandboxGame {
     this.hurtFlashTimer = 1.0
     const scoreEl = this.deathScreen.querySelector('#death-score')
     if (scoreEl) scoreEl.textContent = Math.floor(this.runSeconds).toString()
+    // Unlock pointer so user can click Respawn
+    if (this.player.isLocked) this.player.controls.unlock()
   }
 
   private handleRespawn(): void {
