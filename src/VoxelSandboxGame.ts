@@ -205,12 +205,8 @@ export class VoxelSandboxGame {
     this.lastFrameTime = now
 
     this.stats.begin()
-    this.world.update(this.player.position)
-    this.player.update(dt, this.input, this.world)
 
-    const slotSelection = this.input.consumeSlotSelection()
-    if (slotSelection !== null) this.updateSelectedSlot(slotSelection)
-    if (this.input.consumeCameraToggle()) this.player.toggleCameraMode()
+    // ── Menu input (always processed) ──
     if (this.input.consumeInventoryToggle()) this.toggleInventory()
     if (this.input.consumeDebugToggle()) {
       this.debugVisible = !this.debugVisible
@@ -226,52 +222,72 @@ export class VoxelSandboxGame {
       }
     }
 
-    this.handlePlaygroundEvents(this.playground.update(dt, this.player, now / 1000))
-    this.trackTimers(dt)
-    if (this.settings.dayNightCycle) this.updateDayNightCycle(dt)
-    this.sky.update(this.player.position, this.dayNightTime)
+    // ── Determine if gameplay is paused ──
+    const paused = this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
+      || (!this.player.isLocked && this.gameStarted && !this.input.isTouchMode())
 
-    // Mobs
-    if (this.settings.hostileMobs || this.settings.passiveMobs) {
-      const mobResult = this.mobs.update(dt, this.player.position, this.world, this.dayNightTime,
-        this.settings.hostileMobs, this.settings.passiveMobs)
-      if (mobResult.playerDamage > 0 && this.survival.state.alive && this.settings.survival) {
-        const died = this.survival.takeDamage(mobResult.playerDamage)
-        this.playSound('hurt')
-        this.hurtFlashTimer = 0.3
-        if (died) this.handleDeath()
-      }
-      for (const drop of mobResult.drops) {
-        this.inventory.addItem(drop.id, ItemType.Food, drop.count)
-      }
-    }
+    if (!paused) {
+      // ── Gameplay updates (only when active) ──
+      this.world.update(this.player.position)
+      this.player.update(dt, this.input, this.world)
 
-    // Survival
-    if (this.settings.survival && this.survival.state.alive) {
-      const sv = this.survival.update(dt, this.player.position.y, this.player.isGrounded, this.player.inWater)
-      if (sv.damaged) {
-        this.playSound('hurt')
-        this.hurtFlashTimer = 0.3
-      }
-      if (sv.died) this.handleDeath()
-    }
+      const slotSelection = this.input.consumeSlotSelection()
+      if (slotSelection !== null) this.updateSelectedSlot(slotSelection)
+      if (this.input.consumeCameraToggle()) this.player.toggleCameraMode()
 
-    // Footstep sounds
-    if (this.player.isGrounded && Math.hypot(this.player.velocity.x, this.player.velocity.z) > 1) {
-      this.stepTimer += dt
-      if (this.stepTimer > 0.4) { this.stepTimer = 0; this.playSound('step') }
+      this.handlePlaygroundEvents(this.playground.update(dt, this.player, now / 1000))
+      this.trackTimers(dt)
+      if (this.settings.dayNightCycle) this.updateDayNightCycle(dt)
+      this.sky.update(this.player.position, this.dayNightTime)
+
+      // Mobs
+      if (this.settings.hostileMobs || this.settings.passiveMobs) {
+        const mobResult = this.mobs.update(dt, this.player.position, this.world, this.dayNightTime,
+          this.settings.hostileMobs, this.settings.passiveMobs)
+        if (mobResult.playerDamage > 0 && this.survival.state.alive && this.settings.survival) {
+          const died = this.survival.takeDamage(mobResult.playerDamage)
+          this.playSound('hurt')
+          this.hurtFlashTimer = 0.3
+          if (died) this.handleDeath()
+        }
+        for (const drop of mobResult.drops) {
+          this.inventory.addItem(drop.id, ItemType.Food, drop.count)
+        }
+      }
+
+      // Survival
+      if (this.settings.survival && this.survival.state.alive) {
+        const sv = this.survival.update(dt, this.player.position.y, this.player.isGrounded, this.player.inWater)
+        if (sv.damaged) {
+          this.playSound('hurt')
+          this.hurtFlashTimer = 0.3
+        }
+        if (sv.died) this.handleDeath()
+      }
+
+      // Footstep sounds
+      if (this.player.isGrounded && Math.hypot(this.player.velocity.x, this.player.velocity.z) > 1) {
+        this.stepTimer += dt
+        if (this.stepTimer > 0.4) { this.stepTimer = 0; this.playSound('step') }
+      } else {
+        this.stepTimer = 0.3
+      }
+
+      this.updateTarget()
+      this.updateGhostBlock()
+      this.applyBlockEditing()
+      this.effects.update(dt)
     } else {
-      this.stepTimer = 0.3
+      // While paused, consume and discard gameplay inputs
+      this.input.consumeSlotSelection()
+      this.input.consumeCameraToggle()
+      this.input.consumePrimaryAction()
+      this.input.consumeSecondaryAction()
     }
 
-    this.updateTarget()
-    this.updateGhostBlock()
-    this.applyBlockEditing()
     this.updateHud()
-    this.effects.update(dt)
     this.input.endFrame()
 
-    // Hurt flash overlay
     if (this.hurtFlashTimer > 0) this.hurtFlashTimer -= dt
 
     this.renderer.render(this.scene, this.camera)
@@ -727,6 +743,9 @@ export class VoxelSandboxGame {
       this.startCard.classList.add('hidden')
       this.pauseMenuOpen = true
       this.pauseMenu.classList.add('visible')
+      // The keydown for Escape fires BEFORE the unlock event, so a queued
+      // escape would immediately close the pause menu we just opened. Eat it.
+      this.input.consumeEscape()
     }
   }
 
