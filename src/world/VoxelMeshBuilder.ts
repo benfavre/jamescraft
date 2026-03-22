@@ -149,8 +149,13 @@ function shouldRenderFace(block: BlockId, neighbor: BlockId): boolean {
   const source = getBlockDefinition(block)
   const adjacent = getBlockDefinition(neighbor)
 
+  // Don't render faces between same liquid type
+  if (source.liquid && adjacent.liquid) {
+    return false
+  }
+
   if (source.transparent) {
-    return !adjacent.solid
+    return !adjacent.solid && !adjacent.liquid
   }
 
   return adjacent.transparent
@@ -177,9 +182,15 @@ function pushFace(
   const faceColor = getFaceColor(block, face.name)
   const baseVertex = buffers.vertexCount
 
+  const blockDef = getBlockDefinition(block)
   for (const corner of face.corners) {
-    const [cornerX, cornerY, cornerZ] = corner
+    let [cornerX, cornerY, cornerZ] = corner
     const [normalX, normalY, normalZ] = face.normal
+
+    // Lower top of liquid blocks
+    if (blockDef.liquid && cornerY === 1) {
+      cornerY = 0.875
+    }
 
     buffers.positions.push(worldX + cornerX, y + cornerY, worldZ + cornerZ)
     buffers.normals.push(normalX, normalY, normalZ)

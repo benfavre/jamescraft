@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { CHUNK_HEIGHT, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH, PLAYER_HEIGHT, WORLD_SEED } from '../constants'
-import { BlockId, isSolidBlock } from './BlockTypes'
+import { BlockId, isSolidBlock, isLiquidBlock } from './BlockTypes'
 import { ChunkManager } from './ChunkManager'
 import { TerrainGenerator } from './TerrainGenerator'
 
@@ -11,7 +11,7 @@ interface BlockEdit {
   block: BlockId
 }
 
-const EDITS_STORAGE_KEY = 'jamescraft-block-edits'
+const EDITS_STORAGE_KEY = 'jamescraft-block-edits-v2'
 
 export class World {
   readonly generator: TerrainGenerator
@@ -68,6 +68,10 @@ export class World {
 
   isSolidAt(x: number, y: number, z: number): boolean {
     return isSolidBlock(this.getBlock(x, y, z))
+  }
+
+  isLiquidAt(x: number, y: number, z: number): boolean {
+    return isLiquidBlock(this.getBlock(x, y, z))
   }
 
   canOccupy(position: THREE.Vector3): boolean {

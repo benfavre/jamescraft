@@ -3,8 +3,11 @@ export class InputController {
   private readonly justPressed = new Set<string>()
   private readonly slotQueue: number[] = []
   private primaryActionQueued = false
+  private primaryHeld = false
   private secondaryActionQueued = false
   private cameraToggleQueued = false
+  private inventoryToggleQueued = false
+  private debugToggleQueued = false
   private readonly touchMode = isTouchUiPreferred()
   private touchMoveAxes = { strafe: 0, forward: 0 }
   private touchLookDelta = { x: 0, y: 0 }
@@ -14,6 +17,7 @@ export class InputController {
     window.addEventListener('keydown', this.handleKeyDown)
     window.addEventListener('keyup', this.handleKeyUp)
     window.addEventListener('mousedown', this.handleMouseDown)
+    window.addEventListener('mouseup', this.handleMouseUp)
     window.addEventListener('contextmenu', this.handleContextMenu)
   }
 
@@ -21,6 +25,7 @@ export class InputController {
     window.removeEventListener('keydown', this.handleKeyDown)
     window.removeEventListener('keyup', this.handleKeyUp)
     window.removeEventListener('mousedown', this.handleMouseDown)
+    window.removeEventListener('mouseup', this.handleMouseUp)
     window.removeEventListener('contextmenu', this.handleContextMenu)
   }
 
@@ -95,6 +100,22 @@ export class InputController {
     return queued
   }
 
+  consumeInventoryToggle(): boolean {
+    const queued = this.inventoryToggleQueued
+    this.inventoryToggleQueued = false
+    return queued
+  }
+
+  isPrimaryHeld(): boolean {
+    return this.primaryHeld
+  }
+
+  consumeDebugToggle(): boolean {
+    const q = this.debugToggleQueued
+    this.debugToggleQueued = false
+    return q
+  }
+
   setTouchMoveAxes(strafe: number, forward: number): void {
     this.touchMoveAxes.strafe = strafe
     this.touchMoveAxes.forward = forward
@@ -152,6 +173,15 @@ export class InputController {
     if (event.code === 'KeyV') {
       this.cameraToggleQueued = true
     }
+
+    if (event.code === 'KeyE') {
+      this.inventoryToggleQueued = true
+    }
+
+    if (event.code === 'F3') {
+      event.preventDefault()
+      this.debugToggleQueued = true
+    }
   }
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
@@ -170,10 +200,17 @@ export class InputController {
 
     if (event.button === 0) {
       this.primaryActionQueued = true
+      this.primaryHeld = true
     }
 
     if (event.button === 2) {
       this.secondaryActionQueued = true
+    }
+  }
+
+  private readonly handleMouseUp = (event: MouseEvent): void => {
+    if (event.button === 0) {
+      this.primaryHeld = false
     }
   }
 

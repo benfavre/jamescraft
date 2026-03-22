@@ -4,37 +4,21 @@ import { MAX_INTERACTION_DISTANCE, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH, PLAYER_
 import { GameAudio } from './gameplay/GameAudio'
 import { FeedbackEffects } from './gameplay/FeedbackEffects'
 import { Playground, type PlaygroundEvent } from './gameplay/Playground'
+import { SurvivalSystem } from './gameplay/Survival'
+import { Inventory, ItemType, getItemLabel, getItemColor, type ToolKind } from './gameplay/Inventory'
+import { MobSystem } from './gameplay/MobSystem'
 import { InputController } from './player/InputController'
 import { Player } from './player/Player'
 import { HOTBAR_BLOCKS, getBlockDefinition, BlockId } from './world/BlockTypes'
 import { traceVoxelRay, type VoxelHit } from './world/DDA'
 import { World } from './world/World'
-
-type KidMissionId = 'star' | 'pad' | 'ring' | 'crate' | 'bridge' | 'goal'
-
-interface KidMission {
-  id: KidMissionId
-  title: string
-  hint: string
-}
-
-const KID_MISSIONS: KidMission[] = [
-  { id: 'star', title: 'Catch a star', hint: 'Grab one of the glowing stars on the path.' },
-  { id: 'pad', title: 'Ride the jump pad', hint: 'Step on the orange launch pad and get tossed forward.' },
-  { id: 'ring', title: 'Fly through the sky ring', hint: 'Use the jump pad and pass through the blue ring.' },
-  { id: 'crate', title: 'Smash the party crate', hint: 'Break the bright crate near the end of the path.' },
-  { id: 'bridge', title: 'Build the tiny bridge', hint: 'Place 2 blocks in the glowing bridge slots.' },
-  { id: 'goal', title: 'Reach the party orb', hint: 'Finish the course and run to the glowing orb tower.' },
-]
+import { SkyRenderer } from './world/SkyRenderer'
 
 export class VoxelSandboxGame {
   private static readonly BEST_RUN_STORAGE_KEY = 'voxel-sandbox-best-run-seconds'
   private readonly scene = new THREE.Scene()
   private readonly camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 250)
-  private readonly renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    powerPreference: 'high-performance',
-  })
+  private readonly renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
   private readonly stats = new Stats()
   private readonly world: World
   private readonly player: Player
@@ -52,24 +36,35 @@ export class VoxelSandboxGame {
   private readonly ambientLight = new THREE.AmbientLight('#d8f0ff', 0.65)
   private readonly sunLight = new THREE.DirectionalLight('#fff5de', 1.35)
   private dayNightTime = 0.25
+
+  // New systems
+  private readonly survival = new SurvivalSystem()
+  private readonly inventory = new Inventory()
+  private readonly mobs: MobSystem
+  private readonly sky: SkyRenderer
+  private readonly audio = new GameAudio()
+  private readonly effects: FeedbackEffects
+
+  // HUD elements
   private readonly startCard = document.createElement('div')
-  private readonly chunkCounter = document.createElement('span')
-  private readonly positionLabel = document.createElement('span')
-  private readonly targetLabel = document.createElement('span')
-  private readonly lockBadge = document.createElement('span')
-  private readonly cameraLabel = document.createElement('span')
-  private readonly questCard = document.createElement('section')
-  private readonly questProgressLabel = document.createElement('p')
-  private readonly questList = document.createElement('ol')
-  private readonly celebrationToast = document.createElement('div')
-  private readonly finishCard = document.createElement('section')
-  private readonly boostOverlay = document.createElement('div')
+  private readonly debugOverlay = document.createElement('div')
   private readonly hotbar = document.createElement('div')
   private readonly mobileBlockToggle = document.createElement('button')
   private readonly hotbarButtons: HTMLButtonElement[] = []
-  private readonly completedMissions = new Set<KidMissionId>()
-  private readonly audio = new GameAudio()
-  private readonly effects: FeedbackEffects
+  private readonly celebrationToast = document.createElement('div')
+  private readonly boostOverlay = document.createElement('div')
+  private debugVisible = false
+
+  // Survival HUD
+  private readonly healthBar = document.createElement('div')
+  private readonly hungerBar = document.createElement('div')
+  private readonly deathScreen = document.createElement('div')
+  private readonly inventoryPanel = document.createElement('div')
+
+  // Playground (kept for backwards compat)
+  private readonly completedMissions = new Set<string>()
+
+  // State
   private currentTarget: VoxelHit | null = null
   private selectedSlot = 0
   private disposed = false
@@ -80,8 +75,11 @@ export class VoxelSandboxGame {
   private boostOverlayTimer = 0
   private runSeconds = 0
   private courseFinished = false
-  private finishCardDismissed = false
-  private bestRunSeconds = Number.POSITIVE_INFINITY
+  private inventoryOpen = false
+  private breakProgress = 0
+  private breakingBlock: THREE.Vector3 | null = null
+  private hurtFlashTimer = 0
+  private stepTimer = 0
 
   constructor(private readonly mountNode: HTMLElement) {
     this.mountNode.innerHTML = ''
@@ -93,7 +91,7 @@ export class VoxelSandboxGame {
     this.mountNode.append(this.renderer.domElement)
 
     this.scene.background = this.skyColor
-    this.scene.fog = new THREE.Fog(this.skyColor, 60, 165)
+    this.scene.fog = new THREE.Fog(this.skyColor, 60, 200)
 
     this.setupLights()
 
@@ -102,15 +100,19 @@ export class VoxelSandboxGame {
     this.world.primeAround(this.player.position)
     this.playground = new Playground(this.scene, this.world, this.player.position)
     this.effects = new FeedbackEffects(this.scene)
+    this.mobs = new MobSystem(this.scene)
+    this.sky = new SkyRenderer()
+    this.scene.add(this.sky.root)
     this.scene.add(this.player.avatar.root)
+
+    this.survival.state.lastGroundedY = this.player.position.y
 
     this.input = new InputController(() => this.player.controls.lock())
     this.mountNode.classList.toggle('touch-mode', this.input.isTouchMode())
-    this.bestRunSeconds = this.readBestRunSeconds()
+    this.readBestRunSeconds()
 
     this.highlight.visible = false
     this.scene.add(this.highlight)
-
     this.ghostBlock.visible = false
     this.ghostBlock.renderOrder = 2
     this.scene.add(this.ghostBlock)
@@ -125,17 +127,13 @@ export class VoxelSandboxGame {
 
     this.mountNode.append(this.createHud())
     this.updateSelectedSlot(0)
-    this.registerDebugHooks()
 
     window.addEventListener('resize', this.handleResize)
     this.renderer.setAnimationLoop(this.animate)
   }
 
   dispose(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.disposed = true
     window.removeEventListener('resize', this.handleResize)
     this.renderer.setAnimationLoop(null)
@@ -150,38 +148,75 @@ export class VoxelSandboxGame {
     this.effects.dispose()
     this.player.avatar.dispose()
     this.playground.dispose()
+    this.mobs.dispose()
+    this.sky.dispose()
     this.world.dispose()
     this.renderer.dispose()
   }
 
   private readonly animate = (): void => {
     const now = performance.now()
-    const deltaSeconds = Math.min((now - this.lastFrameTime) / 1000, 0.05)
+    const dt = Math.min((now - this.lastFrameTime) / 1000, 0.05)
     this.lastFrameTime = now
 
     this.stats.begin()
     this.world.update(this.player.position)
-    this.player.update(deltaSeconds, this.input, this.world)
+    this.player.update(dt, this.input, this.world)
 
     const slotSelection = this.input.consumeSlotSelection()
-
-    if (slotSelection !== null) {
-      this.updateSelectedSlot(slotSelection)
+    if (slotSelection !== null) this.updateSelectedSlot(slotSelection)
+    if (this.input.consumeCameraToggle()) this.player.toggleCameraMode()
+    if (this.input.consumeInventoryToggle()) this.toggleInventory()
+    if (this.input.consumeDebugToggle()) {
+      this.debugVisible = !this.debugVisible
+      this.debugOverlay.classList.toggle('visible', this.debugVisible)
     }
 
-    if (this.input.consumeCameraToggle()) {
-      this.player.toggleCameraMode()
+    this.handlePlaygroundEvents(this.playground.update(dt, this.player, now / 1000))
+    this.trackTimers(dt)
+    this.updateDayNightCycle(dt)
+    this.sky.update(this.player.position, this.dayNightTime)
+
+    // Mobs
+    const mobResult = this.mobs.update(dt, this.player.position, this.world, this.dayNightTime)
+    if (mobResult.playerDamage > 0 && this.survival.state.alive) {
+      const died = this.survival.takeDamage(mobResult.playerDamage)
+      this.audio.play('hurt')
+      this.hurtFlashTimer = 0.3
+      if (died) this.handleDeath()
+    }
+    for (const drop of mobResult.drops) {
+      this.inventory.addItem(drop.id, ItemType.Food, drop.count)
     }
 
-    this.handlePlaygroundEvents(this.playground.update(deltaSeconds, this.player, now / 1000))
-    this.trackTimers(deltaSeconds)
-    this.updateDayNightCycle(deltaSeconds)
+    // Survival
+    if (this.survival.state.alive) {
+      const sv = this.survival.update(dt, this.player.position.y, this.player.isGrounded, this.player.inWater)
+      if (sv.damaged) {
+        this.audio.play('hurt')
+        this.hurtFlashTimer = 0.3
+      }
+      if (sv.died) this.handleDeath()
+    }
+
+    // Footstep sounds
+    if (this.player.isGrounded && Math.hypot(this.player.velocity.x, this.player.velocity.z) > 1) {
+      this.stepTimer += dt
+      if (this.stepTimer > 0.4) { this.stepTimer = 0; this.audio.play('step') }
+    } else {
+      this.stepTimer = 0.3
+    }
+
     this.updateTarget()
     this.updateGhostBlock()
     this.applyBlockEditing()
     this.updateHud()
-    this.effects.update(deltaSeconds)
+    this.effects.update(dt)
     this.input.endFrame()
+
+    // Hurt flash overlay
+    if (this.hurtFlashTimer > 0) this.hurtFlashTimer -= dt
+
     this.renderer.render(this.scene, this.camera)
     this.stats.end()
   }
@@ -195,235 +230,139 @@ export class VoxelSandboxGame {
     const hud = document.createElement('div')
     hud.className = 'hud'
     const touchMode = this.input.isTouchMode()
-    const title = touchMode ? 'Treasure Run Starts Here' : 'Click Into Treasure Run'
-    const intro = touchMode
-      ? 'Grab stars, fly through the ring, smash the crate, build a mini bridge, and finish at the orb.'
-      : 'Start with a mini obstacle run: collect stars, launch through the ring, smash the crate, build a tiny bridge, and sprint for the orb.'
-    const controls = touchMode
-      ? `
-        <li>Left stick: Move</li>
-        <li>LOOK zone: Turn the camera</li>
-        <li>JUMP: Hop or fly from the launch pad</li>
-        <li>BREAK / PLACE: Smash and build</li>
-        <li>SNEAK / CAM: Slow walk / switch camera</li>
-      `
-      : `
-        <li>WASD: Move</li>
-        <li>Shift: Sneak</li>
-        <li>Space: Jump</li>
-        <li>Left click / Right click: Break / place</li>
-        <li>1-9: Change block</li>
-        <li>V: Switch camera</li>
-      `
 
+    // ── Start Screen ──
     this.startCard.className = 'start-card'
-    this.startCard.innerHTML = touchMode
-      ? `
-        <p class="eyebrow">JamesCraft</p>
-        <h1>${title}</h1>
-        <p>${intro}</p>
-        <ol class="quick-start-list">
-          <li>Follow the stars</li>
-          <li>Fly through the ring</li>
-          <li>Smash the crate and build the bridge</li>
-        </ol>
+    const startTitle = document.createElement('h1')
+    startTitle.className = 'start-title'
+    startTitle.textContent = 'JamesCraft'
+    const startSub = document.createElement('p')
+    startSub.className = 'start-subtitle'
+    startSub.textContent = 'A survival voxel sandbox with biomes, ores, mobs, crafting & day/night cycle.'
+    const startBtn = document.createElement('button')
+    startBtn.type = 'button'
+    startBtn.className = 'start-button'
+    startBtn.textContent = touchMode ? 'PLAY' : 'SINGLEPLAYER'
+    startBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.audio.unlock()
+      if (touchMode) { this.dismissMobileIntro(); return }
+      this.player.controls.lock()
+    })
+
+    const startControls = document.createElement('ul')
+    startControls.className = 'start-controls'
+    if (!touchMode) {
+      startControls.innerHTML = `
+        <li><strong>WASD</strong> Move &nbsp; <strong>Space</strong> Jump &nbsp; <strong>Shift</strong> Sneak</li>
+        <li><strong>Hold LMB</strong> Break block &nbsp; <strong>RMB</strong> Place block</li>
+        <li><strong>1-9</strong> Hotbar &nbsp; <strong>E</strong> Inventory &nbsp; <strong>V</strong> Camera &nbsp; <strong>F3</strong> Debug</li>
+        <li><strong>Tip:</strong> Punch trees to get wood, then craft tools!</li>
       `
-      : `
-        <p class="eyebrow">JamesCraft</p>
-        <h1>${title}</h1>
-        <p>${intro}</p>
-        <div class="howto-grid">
-          <section class="howto-card">
-            <h2>First 30 Seconds</h2>
-            <ol class="howto-steps">
-              <li>Click to lock in, then follow the stars.</li>
-              <li>Use the jump pad to fly through the sky ring.</li>
-              <li>Smash the crate, build the mini bridge, and sprint to the orb.</li>
-            </ol>
-          </section>
-          <section class="howto-card">
-            <h2>What Is New</h2>
-            <ul class="feature-list">
-              <li>A toy-course now runs straight out from spawn.</li>
-              <li>The launch pad and sky ring make the first jump feel like a stunt.</li>
-              <li>Press V to watch your hero in third person.</li>
-            </ul>
-          </section>
-        </div>
-        <p class="helper-copy">
-          Tip: the Quest Board always shows one clear thing to try next, so kids do not need to guess what to do.
-        </p>
-        <ul class="controls-list">
-          ${controls}
-        </ul>
-      `
-    this.startCard.append(this.createStartActions(touchMode))
+    }
+
+    const startVer = document.createElement('span')
+    startVer.className = 'start-version'
+    startVer.textContent = 'JamesCraft v0.2.0'
+
+    this.startCard.append(startTitle, startSub, startBtn, startControls, startVer)
 
     if (!touchMode) {
       this.startCard.addEventListener('click', () => {
-        if (this.player.isLocked) {
-          return
-        }
-
+        if (this.player.isLocked) return
         this.audio.unlock()
         this.player.controls.lock()
       })
     }
 
-    const header = document.createElement('div')
-    header.className = 'panel top-left'
-    this.lockBadge.className = 'badge'
-    this.lockBadge.textContent = 'PAUSED'
-    this.cameraLabel.className = 'camera-chip'
-    this.cameraLabel.textContent = 'THIRD PERSON'
-    this.chunkCounter.className = 'status-detail'
-    this.chunkCounter.textContent = 'Chunks: 0'
-    this.positionLabel.className = 'status-detail'
-    this.positionLabel.textContent = 'Pos: 0, 0, 0'
-    this.targetLabel.className = 'status-detail'
-    this.targetLabel.textContent = 'Target: none'
-    header.append(this.lockBadge, this.cameraLabel, this.chunkCounter, this.positionLabel, this.targetLabel)
+    // ── Debug Overlay (F3) ──
+    this.debugOverlay.className = 'debug-overlay'
+    this.debugOverlay.id = 'debug-overlay'
 
+    // ── Hotbar (Minecraft-style) ──
     this.hotbar.className = 'hotbar'
-
     HOTBAR_BLOCKS.forEach((block, index) => {
-      const definition = getBlockDefinition(block)
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.id = `slot-${index + 1}`
-      button.className = 'slot'
-      button.innerHTML = `<span class="slot-key">${index + 1}</span><span class="slot-name">${definition.label}</span>`
-      button.style.setProperty('--slot-color', definition.baseColor)
-      button.addEventListener('click', () => {
+      const def = getBlockDefinition(block)
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'hslot'
+      const swatch = document.createElement('div')
+      swatch.className = 'hslot-swatch'
+      swatch.style.background = def.baseColor
+      const key = document.createElement('span')
+      key.className = 'hslot-key'
+      key.textContent = String(index + 1)
+      const name = document.createElement('span')
+      name.className = 'hslot-name'
+      name.textContent = def.label
+      btn.append(swatch, key, name)
+      btn.addEventListener('click', () => {
         this.updateSelectedSlot(index)
-        if (this.input.isTouchMode()) {
-          this.setMobileHotbarExpanded(false)
-        }
+        if (this.input.isTouchMode()) this.setMobileHotbarExpanded(false)
       })
-      this.hotbarButtons.push(button)
-      this.hotbar.append(button)
+      this.hotbarButtons.push(btn)
+      this.hotbar.append(btn)
     })
 
+    // ── Crosshair ──
     const crosshair = document.createElement('div')
     crosshair.className = 'crosshair'
     crosshair.innerHTML = '<span></span><span></span>'
 
-    hud.append(
-      this.startCard,
-      header,
-      this.createQuestHud(),
-      this.createCelebrationToast(),
-      this.createFinishCard(),
-      this.createBoostOverlay(),
-      this.hotbar,
-      crosshair,
-    )
+    // ── Survival HUD (hearts + hunger) ──
+    this.healthBar.className = 'health-bar'
+    this.hungerBar.className = 'hunger-bar'
+    const survivalHud = document.createElement('div')
+    survivalHud.className = 'survival-hud'
+    survivalHud.id = 'survival-hud'
+    survivalHud.append(this.healthBar, this.hungerBar)
 
-    if (touchMode) {
-      hud.append(this.createMobileControls())
-    }
+    // ── Death Screen ──
+    this.deathScreen.className = 'death-screen'
+    const deathTitle = document.createElement('h1')
+    deathTitle.textContent = 'You Died!'
+    const deathSub = document.createElement('p')
+    deathSub.className = 'death-sub'
+    deathSub.innerHTML = 'Score: <strong id="death-score">0</strong>'
+    const respawnBtn = document.createElement('button')
+    respawnBtn.type = 'button'
+    respawnBtn.className = 'start-button'
+    respawnBtn.textContent = 'RESPAWN'
+    respawnBtn.addEventListener('click', () => this.handleRespawn())
+    const titleBtn = document.createElement('button')
+    titleBtn.type = 'button'
+    titleBtn.className = 'start-button'
+    titleBtn.textContent = 'TITLE SCREEN'
+    titleBtn.style.opacity = '0.6'
+    titleBtn.addEventListener('click', () => window.location.reload())
+    this.deathScreen.append(deathTitle, deathSub, respawnBtn, titleBtn)
 
-    return hud
-  }
+    // ── Inventory Panel ──
+    this.inventoryPanel.className = 'inventory-panel'
 
-  private createStartActions(touchMode: boolean): HTMLElement {
-    const actions = document.createElement('div')
-    actions.className = 'start-actions'
-
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'start-button'
-    button.textContent = touchMode ? 'START PLAYING' : 'CLICK TO PLAY'
-    button.addEventListener('click', (event) => {
-      event.stopPropagation()
-      this.audio.unlock()
-
-      if (touchMode) {
-        this.dismissMobileIntro()
-        return
-      }
-
-      this.player.controls.lock()
-    })
-
-    const note = document.createElement('p')
-    note.className = 'start-note'
-    note.textContent = touchMode
-      ? 'Tap once to begin. Move with the left stick, look on the right, and follow the course in order.'
-      : 'Click once to begin. The whole obstacle course starts right ahead of spawn.'
-
-    actions.append(button, note)
-    return actions
-  }
-
-  private createQuestHud(): HTMLElement {
-    this.questCard.className = 'panel quest-card'
-    this.questCard.innerHTML = '<p class="quest-eyebrow">KIDS MODE</p><h2>Quest Board</h2>'
-    this.questProgressLabel.className = 'quest-progress'
-    this.questList.className = 'quest-list'
-    this.questCard.append(this.questProgressLabel, this.questList)
-    this.renderQuestHud()
-    return this.questCard
-  }
-
-  private createCelebrationToast(): HTMLElement {
+    // ── Toasts & Overlays ──
     this.celebrationToast.className = 'celebration-toast'
     this.celebrationToast.setAttribute('aria-live', 'polite')
-    return this.celebrationToast
-  }
-
-  private createFinishCard(): HTMLElement {
-    this.finishCard.className = 'finish-card'
-    this.finishCard.setAttribute('aria-live', 'polite')
-    this.finishCard.innerHTML = `
-      <p class="eyebrow">course clear</p>
-      <h2>Treasure Run Complete</h2>
-      <p class="finish-copy">You hit the orb and unlocked free build mode.</p>
-      <div class="finish-stats">
-        <article>
-          <span>Run Time</span>
-          <strong id="finish-run-time">--</strong>
-        </article>
-        <article>
-          <span>Best Time</span>
-          <strong id="finish-best-time">--</strong>
-        </article>
-        <article>
-          <span>Rank</span>
-          <strong id="finish-rank">--</strong>
-        </article>
-      </div>
-      <div class="finish-actions">
-        <button id="finish-restart" class="start-button" type="button">PLAY AGAIN</button>
-        <button id="finish-continue" class="ghost-button" type="button">KEEP BUILDING</button>
-      </div>
-    `
-
-    const restartButton = this.finishCard.querySelector<HTMLButtonElement>('#finish-restart')
-    const continueButton = this.finishCard.querySelector<HTMLButtonElement>('#finish-continue')
-
-    restartButton?.addEventListener('click', () => {
-      window.location.reload()
-    })
-
-    continueButton?.addEventListener('click', () => {
-      this.finishCardDismissed = true
-      this.finishCard.classList.remove('visible')
-      this.showCelebration('Free build mode')
-
-      if (!this.input.isTouchMode() && !this.player.isLocked) {
-        this.audio.unlock()
-        this.player.controls.lock()
-      }
-    })
-
-    return this.finishCard
-  }
-
-  private createBoostOverlay(): HTMLElement {
     this.boostOverlay.className = 'boost-overlay'
     this.boostOverlay.innerHTML = Array.from({ length: 10 }, () => '<span></span>').join('')
-    return this.boostOverlay
+
+    const breakBar = document.createElement('div')
+    breakBar.className = 'break-bar'
+    breakBar.id = 'break-bar'
+    const hurtOverlay = document.createElement('div')
+    hurtOverlay.className = 'hurt-overlay'
+    hurtOverlay.id = 'hurt-overlay'
+
+    hud.append(
+      this.startCard, this.debugOverlay, survivalHud,
+      this.celebrationToast, this.boostOverlay,
+      this.hotbar, crosshair,
+      this.deathScreen, this.inventoryPanel,
+      breakBar, hurtOverlay,
+    )
+
+    if (touchMode) hud.append(this.createMobileControls())
+    return hud
   }
 
   private updateTarget(): void {
@@ -433,12 +372,7 @@ export class VoxelSandboxGame {
       MAX_INTERACTION_DISTANCE,
       (x, y, z) => this.world.getBlock(x, y, z),
     )
-
-    if (!this.currentTarget) {
-      this.highlight.visible = false
-      return
-    }
-
+    if (!this.currentTarget) { this.highlight.visible = false; return }
     this.highlight.visible = true
     this.highlight.position.set(
       this.currentTarget.block.x + 0.5,
@@ -449,139 +383,232 @@ export class VoxelSandboxGame {
 
   private updateGhostBlock(): void {
     if (!this.currentTarget || !this.input.isInteractionEnabled(this.player.isLocked)) {
-      this.ghostBlock.visible = false
-      return
+      this.ghostBlock.visible = false; return
     }
-
-    const placePos = this.currentTarget.adjacent
-    if (!this.world.isWithinBuildHeight(placePos.y)) {
-      this.ghostBlock.visible = false
-      return
-    }
-
+    const pp = this.currentTarget.adjacent
+    if (!this.world.isWithinBuildHeight(pp.y)) { this.ghostBlock.visible = false; return }
     const blockDef = getBlockDefinition(HOTBAR_BLOCKS[this.selectedSlot])
-    const material = this.ghostBlock.material as THREE.MeshLambertMaterial
-    material.color.set(blockDef.baseColor)
+    const mat = this.ghostBlock.material as THREE.MeshLambertMaterial
+    mat.color.set(blockDef.baseColor)
     this.ghostBlock.visible = true
-    this.ghostBlock.position.set(placePos.x + 0.5, placePos.y + 0.5, placePos.z + 0.5)
+    this.ghostBlock.position.set(pp.x + 0.5, pp.y + 0.5, pp.z + 0.5)
   }
 
-  private updateDayNightCycle(deltaSeconds: number): void {
-    this.dayNightTime = (this.dayNightTime + deltaSeconds * 0.008) % 1
-
+  private updateDayNightCycle(dt: number): void {
+    this.dayNightTime = (this.dayNightTime + dt * 0.008) % 1
     const sunAngle = this.dayNightTime * Math.PI * 2
     const sunHeight = Math.sin(sunAngle)
     const sunHoriz = Math.cos(sunAngle)
-
     this.sunLight.position.set(sunHoriz * 48, Math.max(sunHeight * 72, 2), 24)
-
     const dayFactor = Math.max(0, Math.min(1, (sunHeight + 0.15) / 0.65))
-
     const nightSky = new THREE.Color('#0a1628')
     const daySky = new THREE.Color('#8ecdf9')
     const sunsetSky = new THREE.Color('#ff9966')
-
     const sunsetFactor = Math.max(0, 1 - Math.abs(sunHeight) * 4) * (sunHeight >= -0.1 ? 1 : 0)
     const sky = daySky.clone().lerp(nightSky, 1 - dayFactor).lerp(sunsetSky, sunsetFactor * 0.4)
-
     this.skyColor.copy(sky)
     this.scene.background = this.skyColor
-    if (this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.color.copy(this.skyColor)
-    }
-
+    if (this.scene.fog instanceof THREE.Fog) this.scene.fog.color.copy(this.skyColor)
     this.ambientLight.intensity = 0.15 + dayFactor * 0.5
     this.sunLight.intensity = 0.2 + dayFactor * 1.15
-
     const sunColor = new THREE.Color('#fff5de').lerp(new THREE.Color('#ff8844'), sunsetFactor * 0.6)
     this.sunLight.color.copy(sunColor)
   }
 
   private applyBlockEditing(): void {
-    if (!this.input.isInteractionEnabled(this.player.isLocked) || !this.currentTarget) {
+    if (!this.input.isInteractionEnabled(this.player.isLocked) || !this.currentTarget || !this.survival.state.alive) {
       this.input.consumePrimaryAction()
       this.input.consumeSecondaryAction()
+      this.breakProgress = 0
       return
     }
 
-    if (this.input.consumePrimaryAction()) {
+    // Block breaking with progress
+    if (this.input.isPrimaryHeld()) {
       const bx = this.currentTarget.block.x
       const by = this.currentTarget.block.y
       const bz = this.currentTarget.block.z
-      const brokenBlock = this.world.getBlock(bx, by, bz)
-      this.world.setBlock(bx, by, bz, BlockId.Air)
-      this.audio.play('break')
 
-      const blockDef = getBlockDefinition(brokenBlock)
-      this.effects.spawnBurst({
-        count: 10,
-        origin: new THREE.Vector3(bx + 0.5, by + 0.5, bz + 0.5),
-        colors: [blockDef.baseColor, '#ffffff', '#888888'],
-        speed: [1.8, 3.5],
-        spread: 0.5,
-        lifetime: [0.3, 0.55],
-        scale: [0.06, 0.12],
-        gravity: 8,
-      })
+      // Reset progress if target changed
+      if (!this.breakingBlock || this.breakingBlock.x !== bx || this.breakingBlock.y !== by || this.breakingBlock.z !== bz) {
+        this.breakProgress = 0
+        this.breakingBlock = new THREE.Vector3(bx, by, bz)
+      }
+
+      const blockId = this.world.getBlock(bx, by, bz)
+      const blockDef = getBlockDefinition(blockId)
+
+      if (blockDef.hardness < Infinity) {
+        // Calculate tool speed
+        let toolSpeed = 1
+        const hotbarItem = this.inventory.getHotbarSlot(this.selectedSlot)
+        if (hotbarItem?.type === ItemType.Tool && hotbarItem.toolKind !== undefined) {
+          const toolMatch = this.toolMatchesBlock(hotbarItem.toolKind, blockDef.preferredTool)
+          if (toolMatch) {
+            const tierSpeed = [2, 4, 6, 8]
+            toolSpeed = tierSpeed[hotbarItem.toolTier ?? 0]
+          }
+        }
+
+        const breakTime = Math.max(0.05, blockDef.hardness / toolSpeed)
+        const dt = Math.min((performance.now() - this.lastFrameTime) / 1000, 0.05) || 0.016
+        this.breakProgress += dt / breakTime
+
+        if (this.breakProgress >= 1) {
+          this.world.setBlock(bx, by, bz, BlockId.Air)
+          this.audio.play('break')
+
+          // Drop as item (stone drops cobblestone)
+          let dropId = blockId as number
+          if (blockId === BlockId.Stone) dropId = BlockId.Cobblestone
+          this.inventory.addItem(dropId, ItemType.Block, 1)
+
+          // Damage tool
+          if (hotbarItem?.type === ItemType.Tool) {
+            const broke = this.inventory.damageTool(this.selectedSlot)
+            if (broke) this.showCelebration('Tool broke!')
+          }
+
+          this.effects.spawnBurst({
+            count: 10,
+            origin: new THREE.Vector3(bx + 0.5, by + 0.5, bz + 0.5),
+            colors: [blockDef.baseColor, '#ffffff', '#888888'],
+            speed: [1.8, 3.5], spread: 0.5, lifetime: [0.3, 0.55], scale: [0.06, 0.12], gravity: 8,
+          })
+
+          this.breakProgress = 0
+          this.breakingBlock = null
+
+          // Try to hit mob behind block
+          this.mobs.hitMob(this.player.getInteractionOrigin(), this.player.getLookDirection(), MAX_INTERACTION_DISTANCE, 1)
+        }
+      }
+    } else {
+      this.breakProgress = 0
+      this.breakingBlock = null
+
+      // Single-click mob attack
+      if (this.input.consumePrimaryAction()) {
+        let dmg = 1
+        const item = this.inventory.getHotbarSlot(this.selectedSlot)
+        if (item?.type === ItemType.Tool && item.toolKind === 3) { // Sword
+          dmg = [4, 5, 6, 7][item.toolTier ?? 0]
+        }
+        if (this.mobs.hitMob(this.player.getInteractionOrigin(), this.player.getLookDirection(), MAX_INTERACTION_DISTANCE, dmg)) {
+          this.audio.play('mobHit')
+          if (item?.type === ItemType.Tool) this.inventory.damageTool(this.selectedSlot)
+        }
+      }
     }
 
     if (this.input.consumeSecondaryAction()) {
-      const placePosition = this.currentTarget.adjacent
-
-      if (!this.world.isWithinBuildHeight(placePosition.y)) {
-        return
-      }
+      const pp = this.currentTarget.adjacent
+      if (!this.world.isWithinBuildHeight(pp.y)) return
 
       const nextBlock = HOTBAR_BLOCKS[this.selectedSlot]
+      if (this.world.getBlock(pp.x, pp.y, pp.z) !== BlockId.Air) return
+      if (this.blockWouldOverlapPlayer(pp)) return
 
-      if (this.world.getBlock(placePosition.x, placePosition.y, placePosition.z) !== BlockId.Air) {
-        return
-      }
-
-      if (this.blockWouldOverlapPlayer(placePosition)) {
-        return
-      }
-
-      this.world.setBlock(placePosition.x, placePosition.y, placePosition.z, nextBlock)
+      this.world.setBlock(pp.x, pp.y, pp.z, nextBlock)
       this.audio.play('place')
-      this.spawnPlacementBurst(placePosition)
+      this.effects.spawnBurst({
+        count: 8,
+        origin: new THREE.Vector3(pp.x + 0.5, pp.y + 0.5, pp.z + 0.5),
+        colors: ['#fff4cb', '#8fe9ff', '#9df0b8'],
+        speed: [1.4, 3], spread: 0.35, lifetime: [0.28, 0.5], scale: [0.05, 0.1], gravity: 6,
+      })
     }
   }
 
+  private toolMatchesBlock(toolKind: ToolKind, preferred: string): boolean {
+    const map: Record<number, string> = { 0: 'pickaxe', 1: 'axe', 2: 'shovel', 3: 'sword' }
+    return map[toolKind] === preferred
+  }
+
   private updateHud(): void {
-    const position = this.player.position
-    const playgroundState = this.playground.getState()
-    this.cameraLabel.textContent = this.player.currentCameraMode === 'third-person' ? 'THIRD PERSON' : 'FIRST PERSON'
-    this.chunkCounter.textContent = `Chunks: ${this.world.getLoadedChunkCount()}`
-    this.positionLabel.textContent = `Pos: ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}`
-    this.targetLabel.textContent = this.currentTarget
-      ? `Target: ${this.currentTarget.block.x}, ${this.currentTarget.block.y}, ${this.currentTarget.block.z} | Stars ${playgroundState.starsCollected}/${playgroundState.starsTotal} | Bridge ${playgroundState.bridgePlaced}/${playgroundState.bridgeNeeded}`
-      : `Target: none | Stars ${playgroundState.starsCollected}/${playgroundState.starsTotal} | Bridge ${playgroundState.bridgePlaced}/${playgroundState.bridgeNeeded}`
-    this.renderQuestHud()
+    // Debug overlay (F3)
+    if (this.debugVisible) {
+      const pos = this.player.position
+      const biome = this.world.generator.getBiomeDefinitionAt(Math.floor(pos.x), Math.floor(pos.z))
+      this.debugOverlay.innerHTML = `
+        <span class="debug-item">JamesCraft v0.2.0</span>
+        <span class="debug-item">${this.player.currentCameraMode === 'third-person' ? '3rd Person' : '1st Person'} | Chunks: ${this.world.getLoadedChunkCount()}</span>
+        <span class="debug-item">XYZ: ${pos.x.toFixed(1)} / ${pos.y.toFixed(1)} / ${pos.z.toFixed(1)}</span>
+        <span class="debug-item">Biome: ${biome.name}</span>
+        <span class="debug-item">${this.currentTarget ? `Looking at: ${this.currentTarget.block.x}, ${this.currentTarget.block.y}, ${this.currentTarget.block.z}` : ''}</span>
+        <span class="debug-item">Health: ${this.survival.state.health}/${this.survival.state.maxHealth} | Hunger: ${this.survival.state.hunger}/${this.survival.state.maxHunger}</span>
+      `
+    }
+
+    // Survival HUD
+    this.updateSurvivalHud()
     this.updateCelebrationToast()
-    this.finishCard.classList.toggle('visible', this.courseFinished && !this.finishCardDismissed)
     this.boostOverlay.classList.toggle('active', this.boostOverlayTimer > 0)
     this.boostOverlay.style.setProperty('--boost-strength', this.boostOverlayTimer.toFixed(2))
+
+    // Break progress bar
+    const breakBar = document.getElementById('break-bar')
+    if (breakBar) {
+      breakBar.style.width = `${Math.min(1, this.breakProgress) * 100}%`
+      breakBar.classList.toggle('active', this.breakProgress > 0)
+    }
+
+    // Hurt overlay
+    const hurtOverlay = document.getElementById('hurt-overlay')
+    if (hurtOverlay) {
+      hurtOverlay.classList.toggle('active', this.hurtFlashTimer > 0)
+    }
+
+    // Death screen
+    this.deathScreen.classList.toggle('visible', !this.survival.state.alive)
+
+    // Low health shake
+    const survHud = document.getElementById('survival-hud')
+    if (survHud) survHud.classList.toggle('low-health', this.survival.state.health <= 4 && this.survival.state.alive)
+
+    // Hotbar
+    this.hotbarButtons.forEach((btn, i) => {
+      btn.classList.toggle('active', i === this.selectedSlot)
+    })
+  }
+
+  private updateSurvivalHud(): void {
+    const s = this.survival.state
+
+    // Hearts
+    let hearts = ''
+    for (let i = 0; i < 10; i++) {
+      const hp = i * 2
+      if (s.health > hp + 1) hearts += '<span class="heart full"></span>'
+      else if (s.health > hp) hearts += '<span class="heart half"></span>'
+      else hearts += '<span class="heart empty"></span>'
+    }
+    this.healthBar.innerHTML = hearts
+
+    // Hunger
+    let hunger = ''
+    for (let i = 0; i < 10; i++) {
+      const hp = i * 2
+      if (s.hunger > hp + 1) hunger += '<span class="drumstick full"></span>'
+      else if (s.hunger > hp) hunger += '<span class="drumstick half"></span>'
+      else hunger += '<span class="drumstick empty"></span>'
+    }
+    this.hungerBar.innerHTML = hunger
   }
 
   private updateSelectedSlot(index: number): void {
     this.selectedSlot = index
-    this.hotbarButtons.forEach((button, buttonIndex) => {
-      button.classList.toggle('active', buttonIndex === index)
-    })
+    this.hotbarButtons.forEach((btn, i) => btn.classList.toggle('active', i === index))
     this.refreshMobileBlockToggle()
+    this.breakProgress = 0
   }
 
   private readonly syncLockState = (): void => {
     if (this.input.isTouchMode()) {
-      this.lockBadge.textContent = 'TOUCH'
       this.startCard.classList.toggle('hidden', this.mobileIntroDismissed)
       return
     }
-
-    const locked = this.player.isLocked
-    this.lockBadge.textContent = locked ? 'LOCKED' : 'PAUSED'
-    this.startCard.classList.toggle('hidden', locked)
+    this.startCard.classList.toggle('hidden', this.player.isLocked)
   }
 
   private readonly handleResize = (): void => {
@@ -590,18 +617,10 @@ export class VoxelSandboxGame {
     this.renderer.setSize(window.innerWidth, window.innerHeight)
   }
 
-  private trackTimers(deltaSeconds: number): void {
-    if (this.celebrationTimer > 0) {
-      this.celebrationTimer = Math.max(0, this.celebrationTimer - deltaSeconds)
-    }
-
-    if (this.boostOverlayTimer > 0) {
-      this.boostOverlayTimer = Math.max(0, this.boostOverlayTimer - deltaSeconds)
-    }
-
-    if (!this.courseFinished && this.isRunActive()) {
-      this.runSeconds += deltaSeconds
-    }
+  private trackTimers(dt: number): void {
+    if (this.celebrationTimer > 0) this.celebrationTimer = Math.max(0, this.celebrationTimer - dt)
+    if (this.boostOverlayTimer > 0) this.boostOverlayTimer = Math.max(0, this.boostOverlayTimer - dt)
+    if (!this.courseFinished && this.isRunActive()) this.runSeconds += dt
   }
 
   private handlePlaygroundEvents(events: PlaygroundEvent[]): void {
@@ -609,153 +628,31 @@ export class VoxelSandboxGame {
       if (event.type === 'star-collected') {
         this.audio.play('star')
         this.effects.spawnBurst({
-          count: 12,
-          origin: this.player.position.clone().add(new THREE.Vector3(0, 0.2, 0)),
-          colors: ['#ffe56f', '#fff7c2', '#ffd166'],
-          speed: [2.4, 4.8],
-          spread: 0.65,
-          lifetime: [0.45, 0.8],
-          scale: [0.08, 0.14],
-          gravity: 6,
+          count: 12, origin: this.player.position.clone().add(new THREE.Vector3(0, 0.2, 0)),
+          colors: ['#ffe56f', '#fff7c2', '#ffd166'], speed: [2.4, 4.8], spread: 0.65, lifetime: [0.45, 0.8], scale: [0.08, 0.14], gravity: 6,
         })
-        const firstStar = !this.completedMissions.has('star')
-        this.completeMission('star')
-
-        if (!firstStar) {
-          this.showCelebration(`Stars ${event.collected}/${event.total}`)
-        }
+        this.completedMissions.add('star')
+        this.showCelebration(`Stars ${event.collected}/${event.total}`)
       }
-
-      if (event.type === 'all-stars-collected') {
-        this.showCelebration('All stars collected')
-      }
-
       if (event.type === 'pad-used') {
         this.audio.play('boost')
         this.boostOverlayTimer = Math.max(this.boostOverlayTimer, 0.65)
-        this.effects.spawnBurst({
-          count: 18,
-          origin: this.player.position.clone().add(new THREE.Vector3(0, -1.1, 0)),
-          colors: ['#ff8d5c', '#ffd166', '#fff4cb'],
-          speed: [3.2, 6.2],
-          spread: 0.85,
-          lifetime: [0.38, 0.72],
-          scale: [0.1, 0.18],
-          gravity: 7,
-        })
-        this.completeMission('pad')
+        this.completedMissions.add('pad')
       }
-
       if (event.type === 'ring-cleared') {
         this.audio.play('ring')
-        this.effects.spawnBurst({
-          count: 18,
-          origin: this.player.position.clone().add(new THREE.Vector3(0, 0.2, 0)),
-          colors: ['#8fe9ff', '#b8f0ff', '#ffffff'],
-          speed: [3, 5.2],
-          spread: 0.95,
-          lifetime: [0.45, 0.82],
-          scale: [0.08, 0.14],
-          gravity: 5,
-        })
-        this.completeMission('ring')
+        this.completedMissions.add('ring')
+        this.showCelebration('Ring cleared!')
       }
-
-      if (event.type === 'crate-smashed') {
-        this.audio.play('smash')
-        this.effects.spawnBurst({
-          count: 22,
-          origin: this.player.position.clone().add(new THREE.Vector3(0, -0.3, 0)),
-          colors: ['#ff6b6b', '#ffd166', '#8fe388', '#8fe9ff', '#ffffff'],
-          speed: [2.8, 5.5],
-          spread: 1.15,
-          lifetime: [0.55, 0.95],
-          scale: [0.1, 0.16],
-          gravity: 8,
-        })
-        this.completeMission('crate')
-      }
-
-      if (event.type === 'bridge-progress') {
-        this.showCelebration(`Bridge ${event.placed}/${event.total}`)
-      }
-
-      if (event.type === 'bridge-complete') {
-        this.audio.play('bridge')
-        this.effects.spawnBurst({
-          count: 16,
-          origin: this.player.position.clone().add(new THREE.Vector3(0, -0.6, 0)),
-          colors: ['#9df0b8', '#fff4cb', '#8fe9ff'],
-          speed: [2.2, 4.6],
-          spread: 0.9,
-          lifetime: [0.55, 0.88],
-          scale: [0.08, 0.14],
-          gravity: 6,
-        })
-        this.completeMission('bridge')
-      }
-
+      if (event.type === 'crate-smashed') { this.audio.play('smash'); this.completedMissions.add('crate') }
+      if (event.type === 'bridge-complete') { this.audio.play('bridge'); this.completedMissions.add('bridge') }
       if (event.type === 'goal-reached') {
-        this.completeMission('goal')
-        this.handleCourseFinished()
+        this.completedMissions.add('goal')
+        this.courseFinished = true
+        this.audio.play('victory')
+        this.showCelebration('Course complete!')
       }
     }
-  }
-
-  private completeMission(id: KidMissionId): void {
-    if (this.completedMissions.has(id)) {
-      return
-    }
-
-    this.completedMissions.add(id)
-    const mission = KID_MISSIONS.find((entry) => entry.id === id)
-
-    if (mission) {
-      this.showCelebration(`Quest clear: ${mission.title}`)
-    }
-
-    if (this.completedMissions.size === KID_MISSIONS.length) {
-      this.showCelebration('Sandbox Star unlocked')
-      this.questCard.classList.add('all-clear')
-    }
-
-    this.renderQuestHud()
-  }
-
-  private renderQuestHud(): void {
-    const completeCount = this.completedMissions.size
-    const playgroundState = this.playground.getState()
-    const compactMode = this.input.isTouchMode()
-    const nextMission = KID_MISSIONS.find((mission) => !this.completedMissions.has(mission.id))
-    const missionsToRender = compactMode
-      ? nextMission
-        ? [nextMission]
-        : [KID_MISSIONS[KID_MISSIONS.length - 1]]
-      : KID_MISSIONS
-
-    this.questCard.classList.toggle('all-clear', completeCount === KID_MISSIONS.length)
-    this.questCard.classList.toggle('compact', compactMode)
-    this.questProgressLabel.textContent =
-      completeCount === KID_MISSIONS.length
-        ? compactMode
-          ? `All clear | ${this.formatSeconds(this.runSeconds)}`
-          : `All starter quests cleared in ${this.formatSeconds(this.runSeconds)}. Free build unlocked.`
-        : compactMode
-          ? `Next up | ${this.formatSeconds(this.runSeconds)} | Stars ${playgroundState.starsCollected}/${playgroundState.starsTotal}`
-          : `${completeCount}/${KID_MISSIONS.length} starter quests cleared | Time ${this.formatSeconds(this.runSeconds)} | Best ${this.formatBestTime()}`
-
-    this.questList.innerHTML = missionsToRender.map((mission) => {
-      const done = this.completedMissions.has(mission.id)
-      return `
-        <li class="${done ? 'done' : ''}">
-          <span class="quest-mark">${done ? 'DONE' : 'NEXT'}</span>
-          <div>
-            <strong>${mission.title}</strong>
-            <p>${mission.hint}</p>
-          </div>
-        </li>
-      `
-    }).join('')
   }
 
   private showCelebration(message: string): void {
@@ -768,42 +665,94 @@ export class VoxelSandboxGame {
     this.celebrationToast.classList.toggle('visible', this.celebrationTimer > 0)
   }
 
-  private registerDebugHooks(): void {
-    window.__VOXEL_DEBUG__ = {
-      getState: () => ({
-        ready: true,
-        locked: this.player.isLocked,
-        touchMode: this.input.isTouchMode(),
-        cameraMode: this.player.currentCameraMode,
-        selectedSlot: this.selectedSlot,
-        selectedBlock: getBlockDefinition(HOTBAR_BLOCKS[this.selectedSlot]).label,
-        loadedChunks: this.world.getLoadedChunkCount(),
-        missionsComplete: this.completedMissions.size,
-        missionsTotal: KID_MISSIONS.length,
-        runSeconds: Number(this.runSeconds.toFixed(3)),
-        bestRunSeconds: Number.isFinite(this.bestRunSeconds) ? Number(this.bestRunSeconds.toFixed(3)) : null,
-        courseFinished: this.courseFinished,
-        playground: this.playground.getState(),
-        player: {
-          x: Number(this.player.position.x.toFixed(3)),
-          y: Number(this.player.position.y.toFixed(3)),
-          z: Number(this.player.position.z.toFixed(3)),
-        },
-        target: this.currentTarget
-          ? {
-              block: this.currentTarget.block.toArray(),
-              adjacent: this.currentTarget.adjacent.toArray(),
-              distance: Number(this.currentTarget.distance.toFixed(3)),
-            }
-          : null,
-      }),
-      peekBlock: (x: number, y: number, z: number) => this.world.getBlock(x, y, z),
+  private toggleInventory(): void {
+    this.inventoryOpen = !this.inventoryOpen
+    this.inventoryPanel.classList.toggle('visible', this.inventoryOpen)
+    if (this.inventoryOpen) this.renderInventory()
+    if (!this.input.isTouchMode()) {
+      if (this.inventoryOpen && this.player.isLocked) this.player.controls.unlock()
     }
   }
 
+  private renderInventory(): void {
+    const renderSlot = (i: number, isHotbar: boolean): string => {
+      const item = this.inventory.slots[i]
+      const cls = isHotbar ? 'inv-slot hotbar-slot' : 'inv-slot'
+      if (item) {
+        const color = getItemColor(item.id)
+        const label = getItemLabel(item.id)
+        const durBar = item.durability !== undefined && item.maxDurability
+          ? `<div class="dur-bar" style="width:${(item.durability / item.maxDurability * 100)}%"></div>` : ''
+        return `<div class="${cls}" data-slot="${i}" style="--item-color:${color}" title="${label}${item.count > 1 ? ' x' + item.count : ''}">
+          <div class="inv-slot-swatch" style="background:${color}"></div>
+          <span class="inv-count">${item.count > 1 ? item.count : ''}</span>
+          <span class="inv-label">${label}</span>${durBar}</div>`
+      }
+      return `<div class="${cls}" data-slot="${i}"></div>`
+    }
+
+    let html = '<div class="inv-header"><h2>Inventory</h2><button class="inv-close" type="button">&times;</button></div>'
+    html += '<div class="inv-body">'
+
+    // Crafting
+    html += '<div class="craft-section"><p class="inv-section-label">Crafting</p>'
+    html += '<div class="craft-area"><div class="craft-grid">'
+    for (let i = 0; i < 4; i++) html += '<div class="craft-slot" data-craft="' + i + '"></div>'
+    html += '</div><div class="craft-arrow">&rarr;</div><div class="craft-output"></div></div></div>'
+
+    // Main inventory
+    html += '<p class="inv-section-label">Inventory</p><div class="inv-grid">'
+    for (let i = 9; i < 36; i++) html += renderSlot(i, false)
+    html += '</div>'
+
+    // Hotbar
+    html += '<p class="inv-section-label">Hotbar</p><div class="inv-grid">'
+    for (let i = 0; i < 9; i++) html += renderSlot(i, true)
+    html += '</div>'
+
+    html += '<p class="inv-hint">Click items to move between hotbar and inventory. Press E or &times; to close.</p>'
+    html += '</div>'
+    this.inventoryPanel.innerHTML = html
+
+    // Close button
+    this.inventoryPanel.querySelector('.inv-close')?.addEventListener('click', () => this.toggleInventory())
+
+    // Click handlers
+    this.inventoryPanel.querySelectorAll('.inv-slot').forEach(el => {
+      el.addEventListener('click', () => {
+        const slot = Number((el as HTMLElement).dataset.slot)
+        if (slot >= 9 && this.inventory.slots[slot]) {
+          for (let h = 0; h < 9; h++) {
+            if (!this.inventory.slots[h]) { this.inventory.swapSlots(slot, h); this.renderInventory(); return }
+          }
+        } else if (slot < 9 && this.inventory.slots[slot]) {
+          for (let m = 9; m < 36; m++) {
+            if (!this.inventory.slots[m]) { this.inventory.swapSlots(slot, m); this.renderInventory(); return }
+          }
+        }
+      })
+    })
+  }
+
+  private handleDeath(): void {
+    this.audio.play('die')
+    this.hurtFlashTimer = 1.0
+    const scoreEl = this.deathScreen.querySelector('#death-score')
+    if (scoreEl) scoreEl.textContent = Math.floor(this.runSeconds).toString()
+  }
+
+  private handleRespawn(): void {
+    this.survival.respawn()
+    const spawn = this.world.getSpawnPoint()
+    this.player.teleportTo(spawn)
+    this.survival.state.lastGroundedY = spawn.y
+    this.deathScreen.classList.remove('visible')
+    if (!this.input.isTouchMode()) this.player.controls.lock()
+  }
+
   private createMobileControls(): HTMLElement {
-    const mobileControls = document.createElement('div')
-    mobileControls.className = 'mobile-controls'
+    const mc = document.createElement('div')
+    mc.className = 'mobile-controls'
 
     const lookZone = document.createElement('div')
     lookZone.id = 'look-zone'
@@ -814,11 +763,7 @@ export class VoxelSandboxGame {
     joystick.id = 'move-joystick'
     joystick.className = 'joystick'
     joystick.innerHTML = '<div class="joystick-ring"></div><div class="joystick-thumb"></div>'
-    const joystickThumb = joystick.querySelector<HTMLDivElement>('.joystick-thumb')
-
-    if (!joystickThumb) {
-      throw new Error('Missing joystick thumb')
-    }
+    const thumb = joystick.querySelector<HTMLDivElement>('.joystick-thumb')!
 
     const actions = document.createElement('div')
     actions.className = 'mobile-actions'
@@ -829,20 +774,19 @@ export class VoxelSandboxGame {
       <button id="action-sneak" class="action-btn action-sneak" type="button">SNEAK</button>
       <button id="action-camera" class="action-btn action-camera" type="button">CAM</button>
     `
+
     this.mobileBlockToggle.type = 'button'
     this.mobileBlockToggle.id = 'mobile-block-toggle'
     this.mobileBlockToggle.className = 'mobile-block-toggle'
-    this.mobileBlockToggle.addEventListener('click', () => {
-      this.setMobileHotbarExpanded(!this.mobileHotbarExpanded)
-    })
+    this.mobileBlockToggle.addEventListener('click', () => this.setMobileHotbarExpanded(!this.mobileHotbarExpanded))
     this.refreshMobileBlockToggle()
 
-    this.bindJoystick(joystick, joystickThumb)
+    this.bindJoystick(joystick, thumb)
     this.bindLookZone(lookZone)
     this.bindTouchActions(actions)
 
-    mobileControls.append(lookZone, joystick, this.mobileBlockToggle, actions)
-    return mobileControls
+    mc.append(lookZone, joystick, this.mobileBlockToggle, actions)
+    return mc
   }
 
   private setMobileHotbarExpanded(expanded: boolean): void {
@@ -852,188 +796,63 @@ export class VoxelSandboxGame {
   }
 
   private refreshMobileBlockToggle(): void {
-    if (!this.input.isTouchMode()) {
-      return
-    }
-
-    const selectedBlock = getBlockDefinition(HOTBAR_BLOCKS[this.selectedSlot]).label
-    this.mobileBlockToggle.textContent = this.mobileHotbarExpanded ? `HIDE BLOCKS` : `BLOCKS: ${selectedBlock}`
+    if (!this.input.isTouchMode()) return
+    const selected = getBlockDefinition(HOTBAR_BLOCKS[this.selectedSlot]).label
+    this.mobileBlockToggle.textContent = this.mobileHotbarExpanded ? 'HIDE BLOCKS' : `BLOCKS: ${selected}`
     this.mobileBlockToggle.classList.toggle('active', this.mobileHotbarExpanded)
   }
 
   private bindJoystick(joystick: HTMLDivElement, thumb: HTMLDivElement): void {
-    let pointerId: number | null = null
-
-    const resetJoystick = (): void => {
-      this.input.setTouchMoveAxes(0, 0)
-      thumb.style.transform = 'translate(-50%, -50%)'
-      joystick.classList.remove('active')
+    let pid: number | null = null
+    const reset = () => { this.input.setTouchMoveAxes(0, 0); thumb.style.transform = 'translate(-50%, -50%)'; joystick.classList.remove('active') }
+    const update = (cx: number, cy: number) => {
+      const r = joystick.getBoundingClientRect()
+      const rad = r.width * 0.33, cxr = r.left + r.width / 2, cyr = r.top + r.height / 2
+      const dx = cx - cxr, dy = cy - cyr, d = Math.hypot(dx, dy), s = d > rad ? rad / d : 1
+      const x = dx * s, y = dy * s
+      thumb.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`
+      this.input.setTouchMoveAxes(x / rad, -y / rad)
     }
-
-    const updateStick = (clientX: number, clientY: number): void => {
-      const rect = joystick.getBoundingClientRect()
-      const radius = rect.width * 0.33
-      const centerX = rect.left + rect.width / 2
-      const centerY = rect.top + rect.height / 2
-      const dx = clientX - centerX
-      const dy = clientY - centerY
-      const distance = Math.hypot(dx, dy)
-      const scale = distance > radius ? radius / distance : 1
-      const clampedX = dx * scale
-      const clampedY = dy * scale
-
-      thumb.style.transform = `translate(calc(-50% + ${clampedX}px), calc(-50% + ${clampedY}px))`
-      this.input.setTouchMoveAxes(clampedX / radius, -clampedY / radius)
-    }
-
-    joystick.addEventListener('pointerdown', (event) => {
-      this.dismissMobileIntro()
-      pointerId = event.pointerId
-      joystick.classList.add('active')
-      try {
-        joystick.setPointerCapture(event.pointerId)
-      } catch {}
-      updateStick(event.clientX, event.clientY)
-    })
-
-    joystick.addEventListener('pointermove', (event) => {
-      if (pointerId !== event.pointerId) {
-        return
-      }
-
-      updateStick(event.clientX, event.clientY)
-    })
-
-    const releaseStick = (event: PointerEvent): void => {
-      if (pointerId !== event.pointerId) {
-        return
-      }
-
-      try {
-        joystick.releasePointerCapture(event.pointerId)
-      } catch {}
-      pointerId = null
-      resetJoystick()
-    }
-
-    joystick.addEventListener('pointerup', releaseStick)
-    joystick.addEventListener('pointercancel', releaseStick)
-    joystick.addEventListener('lostpointercapture', () => {
-      pointerId = null
-      resetJoystick()
-    })
+    joystick.addEventListener('pointerdown', (e) => { this.dismissMobileIntro(); pid = e.pointerId; joystick.classList.add('active'); try { joystick.setPointerCapture(e.pointerId) } catch {} update(e.clientX, e.clientY) })
+    joystick.addEventListener('pointermove', (e) => { if (pid === e.pointerId) update(e.clientX, e.clientY) })
+    const release = (e: PointerEvent) => { if (pid === e.pointerId) { try { joystick.releasePointerCapture(e.pointerId) } catch {} pid = null; reset() } }
+    joystick.addEventListener('pointerup', release)
+    joystick.addEventListener('pointercancel', release)
+    joystick.addEventListener('lostpointercapture', () => { pid = null; reset() })
   }
 
   private bindLookZone(lookZone: HTMLDivElement): void {
-    let pointerId: number | null = null
-    let lastX = 0
-    let lastY = 0
-
-    lookZone.addEventListener('pointerdown', (event) => {
-      this.dismissMobileIntro()
-      pointerId = event.pointerId
-      lastX = event.clientX
-      lastY = event.clientY
-      lookZone.classList.add('active')
-      try {
-        lookZone.setPointerCapture(event.pointerId)
-      } catch {}
-    })
-
-    lookZone.addEventListener('pointermove', (event) => {
-      if (pointerId !== event.pointerId) {
-        return
-      }
-
-      this.input.queueTouchLook(event.clientX - lastX, event.clientY - lastY)
-      lastX = event.clientX
-      lastY = event.clientY
-    })
-
-    const releaseLook = (event: PointerEvent): void => {
-      if (pointerId !== event.pointerId) {
-        return
-      }
-
-      try {
-        lookZone.releasePointerCapture(event.pointerId)
-      } catch {}
-      pointerId = null
-      lookZone.classList.remove('active')
-    }
-
-    lookZone.addEventListener('pointerup', releaseLook)
-    lookZone.addEventListener('pointercancel', releaseLook)
-    lookZone.addEventListener('lostpointercapture', () => {
-      pointerId = null
-      lookZone.classList.remove('active')
-    })
+    let pid: number | null = null, lx = 0, ly = 0
+    lookZone.addEventListener('pointerdown', (e) => { this.dismissMobileIntro(); pid = e.pointerId; lx = e.clientX; ly = e.clientY; lookZone.classList.add('active'); try { lookZone.setPointerCapture(e.pointerId) } catch {} })
+    lookZone.addEventListener('pointermove', (e) => { if (pid === e.pointerId) { this.input.queueTouchLook(e.clientX - lx, e.clientY - ly); lx = e.clientX; ly = e.clientY } })
+    const release = (e: PointerEvent) => { if (pid === e.pointerId) { try { lookZone.releasePointerCapture(e.pointerId) } catch {} pid = null; lookZone.classList.remove('active') } }
+    lookZone.addEventListener('pointerup', release)
+    lookZone.addEventListener('pointercancel', release)
+    lookZone.addEventListener('lostpointercapture', () => { pid = null; lookZone.classList.remove('active') })
   }
 
   private bindTouchActions(actions: HTMLDivElement): void {
-    const breakButton = actions.querySelector<HTMLButtonElement>('#action-break')
-    const placeButton = actions.querySelector<HTMLButtonElement>('#action-place')
-    const jumpButton = actions.querySelector<HTMLButtonElement>('#action-jump')
-    const sneakButton = actions.querySelector<HTMLButtonElement>('#action-sneak')
-    const cameraButton = actions.querySelector<HTMLButtonElement>('#action-camera')
+    const breakBtn = actions.querySelector<HTMLButtonElement>('#action-break')!
+    const placeBtn = actions.querySelector<HTMLButtonElement>('#action-place')!
+    const jumpBtn = actions.querySelector<HTMLButtonElement>('#action-jump')!
+    const sneakBtn = actions.querySelector<HTMLButtonElement>('#action-sneak')!
+    const camBtn = actions.querySelector<HTMLButtonElement>('#action-camera')!
+    const tap = (b: HTMLButtonElement, h: () => void) => { b.addEventListener('pointerdown', (e) => { e.preventDefault(); this.dismissMobileIntro(); h() }) }
+    tap(breakBtn, () => this.input.queueTouchPrimaryAction())
+    tap(placeBtn, () => this.input.queueTouchSecondaryAction())
+    tap(jumpBtn, () => this.input.queueTouchJump())
+    tap(camBtn, () => this.input.queueTouchCameraToggle())
 
-    if (!breakButton || !placeButton || !jumpButton || !sneakButton || !cameraButton) {
-      throw new Error('Missing touch action buttons')
-    }
-
-    const tapAction = (button: HTMLButtonElement, handler: () => void): void => {
-      button.addEventListener('pointerdown', (event) => {
-        event.preventDefault()
-        this.dismissMobileIntro()
-        handler()
-      })
-    }
-
-    tapAction(breakButton, () => this.input.queueTouchPrimaryAction())
-    tapAction(placeButton, () => this.input.queueTouchSecondaryAction())
-    tapAction(jumpButton, () => this.input.queueTouchJump())
-    tapAction(cameraButton, () => this.input.queueTouchCameraToggle())
-
-    let sneakPointerId: number | null = null
-
-    sneakButton.addEventListener('pointerdown', (event) => {
-      event.preventDefault()
-      this.dismissMobileIntro()
-      sneakPointerId = event.pointerId
-      sneakButton.classList.add('active')
-      this.input.setTouchSneaking(true)
-      try {
-        sneakButton.setPointerCapture(event.pointerId)
-      } catch {}
-    })
-
-    const releaseSneak = (event: PointerEvent): void => {
-      if (sneakPointerId !== event.pointerId) {
-        return
-      }
-
-      sneakPointerId = null
-      sneakButton.classList.remove('active')
-      this.input.setTouchSneaking(false)
-      try {
-        sneakButton.releasePointerCapture(event.pointerId)
-      } catch {}
-    }
-
-    sneakButton.addEventListener('pointerup', releaseSneak)
-    sneakButton.addEventListener('pointercancel', releaseSneak)
-    sneakButton.addEventListener('lostpointercapture', () => {
-      sneakPointerId = null
-      sneakButton.classList.remove('active')
-      this.input.setTouchSneaking(false)
-    })
+    let spid: number | null = null
+    sneakBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); this.dismissMobileIntro(); spid = e.pointerId; sneakBtn.classList.add('active'); this.input.setTouchSneaking(true); try { sneakBtn.setPointerCapture(e.pointerId) } catch {} })
+    const relSneak = (e: PointerEvent) => { if (spid === e.pointerId) { spid = null; sneakBtn.classList.remove('active'); this.input.setTouchSneaking(false); try { sneakBtn.releasePointerCapture(e.pointerId) } catch {} } }
+    sneakBtn.addEventListener('pointerup', relSneak)
+    sneakBtn.addEventListener('pointercancel', relSneak)
+    sneakBtn.addEventListener('lostpointercapture', () => { spid = null; sneakBtn.classList.remove('active'); this.input.setTouchSneaking(false) })
   }
 
   private dismissMobileIntro(): void {
-    if (!this.input.isTouchMode() || this.mobileIntroDismissed) {
-      return
-    }
-
+    if (!this.input.isTouchMode() || this.mobileIntroDismissed) return
     this.audio.unlock()
     this.mobileIntroDismissed = true
     this.syncLockState()
@@ -1043,132 +862,16 @@ export class VoxelSandboxGame {
     return this.input.isTouchMode() ? this.mobileIntroDismissed : this.player.isLocked
   }
 
-  private handleCourseFinished(): void {
-    if (this.courseFinished) {
-      return
-    }
-
-    this.courseFinished = true
-    this.finishCardDismissed = false
-    this.audio.play('victory')
-    this.boostOverlayTimer = Math.max(this.boostOverlayTimer, 1.2)
-    this.effects.spawnBurst({
-      count: 34,
-      origin: this.playground.getGoalPosition().add(new THREE.Vector3(0, 0.3, 0)),
-      colors: ['#ffe56f', '#ff8d5c', '#8fe9ff', '#9df0b8', '#ffffff'],
-      speed: [3.4, 6.8],
-      spread: 1.6,
-      lifetime: [0.75, 1.2],
-      scale: [0.1, 0.18],
-      gravity: 5,
-    })
-    this.bestRunSeconds = Math.min(this.bestRunSeconds, this.runSeconds)
-    this.persistBestRunSeconds(this.bestRunSeconds)
-    this.updateFinishCard()
-
-    if (!this.input.isTouchMode() && this.player.isLocked) {
-      this.player.controls.unlock()
-    }
-  }
-
-  private updateFinishCard(): void {
-    const runTime = this.finishCard.querySelector<HTMLElement>('#finish-run-time')
-    const bestTime = this.finishCard.querySelector<HTMLElement>('#finish-best-time')
-    const rank = this.finishCard.querySelector<HTMLElement>('#finish-rank')
-
-    if (runTime) {
-      runTime.textContent = this.formatSeconds(this.runSeconds)
-    }
-
-    if (bestTime) {
-      bestTime.textContent = this.formatBestTime()
-    }
-
-    if (rank) {
-      rank.textContent = this.getRunRank()
-    }
-  }
-
   private readBestRunSeconds(): number {
-    try {
-      const storedValue = window.localStorage.getItem(VoxelSandboxGame.BEST_RUN_STORAGE_KEY)
-
-      if (!storedValue) {
-        return Number.POSITIVE_INFINITY
-      }
-
-      const numericValue = Number(storedValue)
-      return Number.isFinite(numericValue) ? numericValue : Number.POSITIVE_INFINITY
-    } catch {
-      return Number.POSITIVE_INFINITY
-    }
+    try { const v = window.localStorage.getItem(VoxelSandboxGame.BEST_RUN_STORAGE_KEY); return v ? Number(v) || Infinity : Infinity } catch { return Infinity }
   }
 
-  private persistBestRunSeconds(value: number): void {
-    try {
-      window.localStorage.setItem(VoxelSandboxGame.BEST_RUN_STORAGE_KEY, value.toFixed(3))
-    } catch {}
-  }
-
-  private formatSeconds(value: number): string {
-    return `${value.toFixed(1)}s`
-  }
-
-  private formatBestTime(): string {
-    return Number.isFinite(this.bestRunSeconds) ? this.formatSeconds(this.bestRunSeconds) : 'new run'
-  }
-
-  private getRunRank(): string {
-    if (this.runSeconds <= 18) {
-      return 'S'
-    }
-
-    if (this.runSeconds <= 24) {
-      return 'A'
-    }
-
-    if (this.runSeconds <= 32) {
-      return 'B'
-    }
-
-    return 'C'
-  }
-
-  private spawnPlacementBurst(blockPosition: THREE.Vector3): void {
-    this.effects.spawnBurst({
-      count: 8,
-      origin: new THREE.Vector3(blockPosition.x + 0.5, blockPosition.y + 0.5, blockPosition.z + 0.5),
-      colors: ['#fff4cb', '#8fe9ff', '#9df0b8'],
-      speed: [1.4, 3],
-      spread: 0.35,
-      lifetime: [0.28, 0.5],
-      scale: [0.05, 0.1],
-      gravity: 6,
-    })
-  }
-
-  private blockWouldOverlapPlayer(blockPosition: THREE.Vector3): boolean {
-    const playerMinX = this.player.position.x - PLAYER_HALF_WIDTH
-    const playerMaxX = this.player.position.x + PLAYER_HALF_WIDTH
-    const playerMinY = this.player.position.y - PLAYER_EYE_HEIGHT
-    const playerMaxY = playerMinY + PLAYER_HEIGHT
-    const playerMinZ = this.player.position.z - PLAYER_HALF_WIDTH
-    const playerMaxZ = this.player.position.z + PLAYER_HALF_WIDTH
-
-    const blockMinX = blockPosition.x
-    const blockMaxX = blockPosition.x + 1
-    const blockMinY = blockPosition.y
-    const blockMaxY = blockPosition.y + 1
-    const blockMinZ = blockPosition.z
-    const blockMaxZ = blockPosition.z + 1
-
+  private blockWouldOverlapPlayer(bp: THREE.Vector3): boolean {
+    const px = this.player.position.x, py = this.player.position.y, pz = this.player.position.z
     return (
-      playerMinX < blockMaxX &&
-      playerMaxX > blockMinX &&
-      playerMinY < blockMaxY &&
-      playerMaxY > blockMinY &&
-      playerMinZ < blockMaxZ &&
-      playerMaxZ > blockMinZ
+      px - PLAYER_HALF_WIDTH < bp.x + 1 && px + PLAYER_HALF_WIDTH > bp.x &&
+      py - PLAYER_EYE_HEIGHT < bp.y + 1 && py - PLAYER_EYE_HEIGHT + PLAYER_HEIGHT > bp.y &&
+      pz - PLAYER_HALF_WIDTH < bp.z + 1 && pz + PLAYER_HALF_WIDTH > bp.z
     )
   }
 }

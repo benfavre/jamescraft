@@ -1,4 +1,4 @@
-type AudioCue = 'star' | 'boost' | 'ring' | 'smash' | 'place' | 'break' | 'bridge' | 'victory'
+type AudioCue = 'star' | 'boost' | 'ring' | 'smash' | 'place' | 'break' | 'bridge' | 'victory' | 'hurt' | 'die' | 'eat' | 'step' | 'splash' | 'mobHit' | 'mobDie'
 
 export class GameAudio {
   private context: AudioContext | null = null
@@ -80,6 +80,48 @@ export class GameAudio {
       this.blip(now, 523, 0.14, 'triangle', 0.045)
       this.blip(now + 0.12, 659, 0.16, 'triangle', 0.04)
       this.blip(now + 0.24, 784, 0.22, 'triangle', 0.04)
+      return
+    }
+
+    if (cue === 'hurt') {
+      this.noise(now, 0.08, 0.06)
+      this.blip(now, 180, 0.1, 'sawtooth', 0.03)
+      return
+    }
+
+    if (cue === 'die') {
+      this.sweep(now, 400, 80, 0.4, 'sawtooth', 0.04)
+      this.noise(now, 0.15, 0.04)
+      return
+    }
+
+    if (cue === 'eat') {
+      this.blip(now, 280, 0.06, 'square', 0.015)
+      this.blip(now + 0.08, 340, 0.06, 'square', 0.015)
+      this.blip(now + 0.16, 300, 0.06, 'square', 0.015)
+      return
+    }
+
+    if (cue === 'step') {
+      this.noise(now, 0.035, 0.012)
+      return
+    }
+
+    if (cue === 'splash') {
+      this.noise(now, 0.12, 0.04)
+      this.blip(now, 120, 0.08, 'sine', 0.02)
+      return
+    }
+
+    if (cue === 'mobHit') {
+      this.noise(now, 0.06, 0.03)
+      this.blip(now, 250, 0.06, 'square', 0.02)
+      return
+    }
+
+    if (cue === 'mobDie') {
+      this.sweep(now, 300, 100, 0.25, 'square', 0.025)
+      return
     }
   }
 

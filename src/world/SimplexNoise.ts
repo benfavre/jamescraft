@@ -28,6 +28,12 @@ export class SimplexNoise {
     }
   }
 
+  noise3D(x: number, y: number, z: number): number {
+    const n1 = this.noise2D(x + z * 0.31, y + z * 0.71)
+    const n2 = this.noise2D(y - z * 0.53 + 47.7, x + z * 0.43 + 17.3)
+    return (n1 + n2) * 0.5
+  }
+
   noise2D(x: number, y: number): number {
     const skewFactor = 0.5 * (Math.sqrt(3) - 1)
     const unskewFactor = (3 - Math.sqrt(3)) / 6

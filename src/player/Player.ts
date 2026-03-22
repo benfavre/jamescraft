@@ -4,12 +4,14 @@ import {
   PLAYER_AIR_CONTROL,
   PLAYER_EYE_HEIGHT,
   PLAYER_GRAVITY,
+  PLAYER_WATER_GRAVITY,
   PLAYER_GROUND_ACCELERATION,
   PLAYER_HALF_WIDTH,
   PLAYER_HEIGHT,
   PLAYER_JUMP_SPEED,
   PLAYER_SNEAK_SPEED,
   PLAYER_SPEED,
+  PLAYER_SWIM_SPEED,
 } from '../constants'
 import type { World } from '../world/World'
 import type { InputController } from './InputController'
@@ -77,17 +79,26 @@ export class Player {
       moveDirection.normalize()
     }
 
-    const speed = input.isSneaking() ? PLAYER_SNEAK_SPEED : PLAYER_SPEED
+    const inWater = this.checkInWater(world)
+    const speed = inWater ? PLAYER_SWIM_SPEED : input.isSneaking() ? PLAYER_SNEAK_SPEED : PLAYER_SPEED
     const control = this.grounded ? 1 : PLAYER_AIR_CONTROL
     const acceleration = PLAYER_GROUND_ACCELERATION * control
 
     this.velocity.x = THREE.MathUtils.damp(this.velocity.x, moveDirection.x * speed, acceleration, deltaSeconds)
     this.velocity.z = THREE.MathUtils.damp(this.velocity.z, moveDirection.z * speed, acceleration, deltaSeconds)
-    this.velocity.y -= PLAYER_GRAVITY * deltaSeconds
 
-    if (this.grounded && input.consumeJump()) {
-      this.velocity.y = PLAYER_JUMP_SPEED
-      this.grounded = false
+    if (inWater) {
+      this.velocity.y -= PLAYER_WATER_GRAVITY * deltaSeconds
+      this.velocity.y = Math.max(-3, this.velocity.y)
+      if (input.consumeJump()) {
+        this.velocity.y = 3.5
+      }
+    } else {
+      this.velocity.y -= PLAYER_GRAVITY * deltaSeconds
+      if (this.grounded && input.consumeJump()) {
+        this.velocity.y = PLAYER_JUMP_SPEED
+        this.grounded = false
+      }
     }
 
     this.moveWithCollisions(world, this.velocity.x * deltaSeconds, 'x')
@@ -117,6 +128,25 @@ export class Player {
 
   toggleCameraMode(): void {
     this.setCameraMode(this.cameraMode === 'first-person' ? 'third-person' : 'first-person')
+  }
+
+  get inWater(): boolean {
+    return this._inWater
+  }
+
+  private _inWater = false
+
+  private checkInWater(world: World): boolean {
+    const footY = Math.floor(this.bodyPosition.y - PLAYER_EYE_HEIGHT + 0.1)
+    this._inWater = world.isLiquidAt(Math.floor(this.bodyPosition.x), footY, Math.floor(this.bodyPosition.z))
+    return this._inWater
+  }
+
+  teleportTo(pos: THREE.Vector3): void {
+    this.bodyPosition.copy(pos)
+    this.velocity.set(0, 0, 0)
+    this.grounded = false
+    this.updateCameraTransform()
   }
 
   private applyLookDelta(deltaX: number, deltaY: number): void {

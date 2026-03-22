@@ -29,7 +29,7 @@ export class ChunkManager {
     this.transparentMaterial = new THREE.MeshLambertMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: 0.52,
+      opacity: 0.6,
       depthWrite: false,
     })
   }

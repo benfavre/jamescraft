@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { BlockId } from './BlockTypes'
+import { BlockId, isTargetableBlock } from './BlockTypes'
 
 export interface VoxelHit {
   block: THREE.Vector3
@@ -40,7 +40,7 @@ export function traceVoxelRay(
   while (traveled <= maxDistance) {
     const block = getBlockAt(current.x, current.y, current.z)
 
-    if (block !== BlockId.Air) {
+    if (isTargetableBlock(block)) {
       return {
         block: current.clone(),
         adjacent: previous.clone(),
