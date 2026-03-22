@@ -93,6 +93,7 @@ export class VoxelSandboxGame {
   private debugVisible = false
   private pauseMenuOpen = false
   private settingsOpen = false
+  private gameStarted = false
   private readonly settings: GameSettings
 
   // Survival HUD
@@ -215,7 +216,15 @@ export class VoxelSandboxGame {
       this.debugVisible = !this.debugVisible
       this.debugOverlay.classList.toggle('visible', this.debugVisible)
     }
-    if (this.input.consumeEscape()) this.togglePauseMenu()
+    if (this.input.consumeEscape()) {
+      if (this.settingsOpen) {
+        this.closeSettings()
+      } else if (this.inventoryOpen) {
+        this.toggleInventory()
+      } else if (this.pauseMenuOpen) {
+        this.resumeGame()
+      }
+    }
 
     this.handlePlaygroundEvents(this.playground.update(dt, this.player, now / 1000))
     this.trackTimers(dt)
@@ -323,7 +332,7 @@ export class VoxelSandboxGame {
 
     if (!touchMode) {
       this.startCard.addEventListener('click', () => {
-        if (this.player.isLocked) return
+        if (this.player.isLocked || this.settingsOpen || this.pauseMenuOpen) return
         this.audio.unlock()
         this.player.controls.lock()
       })
@@ -401,11 +410,7 @@ export class VoxelSandboxGame {
     resumeBtn.type = 'button'
     resumeBtn.className = 'start-button'
     resumeBtn.textContent = 'RESUME'
-    resumeBtn.addEventListener('click', () => {
-      this.pauseMenuOpen = false
-      this.pauseMenu.classList.remove('visible')
-      if (!this.input.isTouchMode()) this.player.controls.lock()
-    })
+    resumeBtn.addEventListener('click', () => this.resumeGame())
     const pauseSettingsBtn = document.createElement('button')
     pauseSettingsBtn.type = 'button'
     pauseSettingsBtn.className = 'start-button start-button-secondary'
@@ -693,7 +698,36 @@ export class VoxelSandboxGame {
       this.startCard.classList.toggle('hidden', this.mobileIntroDismissed)
       return
     }
-    this.startCard.classList.toggle('hidden', this.player.isLocked)
+
+    const locked = this.player.isLocked
+
+    if (locked) {
+      // Pointer just locked — hide all menus, game is active
+      this.gameStarted = true
+      this.startCard.classList.add('hidden')
+      this.pauseMenu.classList.remove('visible')
+      this.pauseMenuOpen = false
+      this.settingsPanel.classList.remove('visible')
+      this.settingsOpen = false
+      this.inventoryPanel.classList.remove('visible')
+      this.inventoryOpen = false
+      return
+    }
+
+    // Pointer just unlocked
+    if (!this.gameStarted) {
+      // Haven't entered the game yet — show start card
+      this.startCard.classList.remove('hidden')
+      return
+    }
+
+    // Game was running, pointer released (Escape or focus loss)
+    // Show pause menu unless settings or inventory is already open
+    if (!this.settingsOpen && !this.inventoryOpen) {
+      this.startCard.classList.add('hidden')
+      this.pauseMenuOpen = true
+      this.pauseMenu.classList.add('visible')
+    }
   }
 
   private readonly handleResize = (): void => {
@@ -753,9 +787,12 @@ export class VoxelSandboxGame {
   private toggleInventory(): void {
     this.inventoryOpen = !this.inventoryOpen
     this.inventoryPanel.classList.toggle('visible', this.inventoryOpen)
-    if (this.inventoryOpen) this.renderInventory()
-    if (!this.input.isTouchMode()) {
-      if (this.inventoryOpen && this.player.isLocked) this.player.controls.unlock()
+    if (this.inventoryOpen) {
+      this.renderInventory()
+      if (!this.input.isTouchMode() && this.player.isLocked) this.player.controls.unlock()
+    } else {
+      // Closing inventory — resume gameplay
+      if (!this.input.isTouchMode() && this.gameStarted) this.player.controls.lock()
     }
   }
 
@@ -832,6 +869,8 @@ export class VoxelSandboxGame {
     this.player.teleportTo(spawn)
     this.survival.state.lastGroundedY = spawn.y
     this.deathScreen.classList.remove('visible')
+    this.pauseMenu.classList.remove('visible')
+    this.pauseMenuOpen = false
     if (!this.input.isTouchMode()) this.player.controls.lock()
   }
 
@@ -955,18 +994,10 @@ export class VoxelSandboxGame {
     if (this.settings.sound) this.audio.play(cue)
   }
 
-  private togglePauseMenu(): void {
-    if (this.settingsOpen) {
-      this.closeSettings()
-      return
-    }
-    if (this.inventoryOpen) {
-      this.toggleInventory()
-      return
-    }
-    this.pauseMenuOpen = !this.pauseMenuOpen
-    this.pauseMenu.classList.toggle('visible', this.pauseMenuOpen)
-    if (this.pauseMenuOpen && this.player.isLocked) this.player.controls.unlock()
+  private resumeGame(): void {
+    this.pauseMenuOpen = false
+    this.pauseMenu.classList.remove('visible')
+    if (!this.input.isTouchMode()) this.player.controls.lock()
   }
 
   private openSettings(): void {
@@ -981,9 +1012,14 @@ export class VoxelSandboxGame {
   private closeSettings(): void {
     this.settingsOpen = false
     this.settingsPanel.classList.remove('visible')
-    // Return to wherever we came from
-    if (!this.player.isLocked && !this.input.isTouchMode()) {
+
+    if (!this.gameStarted) {
+      // Came from start screen — show it again
       this.startCard.classList.remove('hidden')
+    } else if (!this.player.isLocked && !this.input.isTouchMode()) {
+      // Came from pause menu — show it again
+      this.pauseMenuOpen = true
+      this.pauseMenu.classList.add('visible')
     }
   }
 
