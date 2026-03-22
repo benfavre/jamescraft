@@ -91,6 +91,7 @@ export class VoxelSandboxGame {
   private readonly pauseMenu = document.createElement('div')
   private readonly settingsPanel = document.createElement('div')
   private debugVisible = false
+  private hudVisible = true
   private pauseMenuOpen = false
   private settingsOpen = false
   private gameStarted = false
@@ -250,6 +251,10 @@ export class VoxelSandboxGame {
     this.stats.begin()
 
     // ── Menu input (always processed) ──
+    if (this.input.consumeHudToggle()) {
+      this.hudVisible = !this.hudVisible
+      this.mountNode.classList.toggle('hud-hidden', !this.hudVisible)
+    }
     if (this.input.consumeInventoryToggle()) this.toggleInventory()
     if (this.input.consumeDebugToggle()) {
       this.debugVisible = !this.debugVisible

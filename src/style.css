@@ -18,6 +18,18 @@ button { font: inherit; }
 .menu-open .game-canvas { cursor: default; }
 .hud { position: absolute; inset: 0; pointer-events: none; }
 
+/* F2: hide all HUD elements and disable their pointer-events */
+.hud-hidden .hotbar,
+.hud-hidden .survival-hud,
+.hud-hidden .crosshair,
+.hud-hidden .debug-overlay,
+.hud-hidden .celebration-toast,
+.hud-hidden .break-bar,
+.hud-hidden .boost-overlay {
+  display: none !important;
+  pointer-events: none !important;
+}
+
 .stats-panel { position: absolute !important; top: 1rem; right: 1rem; z-index: 5; }
 
 /* ===== Crosshair ===== */

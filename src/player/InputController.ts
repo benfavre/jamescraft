@@ -8,6 +8,7 @@ export class InputController {
   private cameraToggleQueued = false
   private inventoryToggleQueued = false
   private debugToggleQueued = false
+  private hudToggleQueued = false
   private escapeQueued = false
   private readonly touchMode = isTouchUiPreferred()
   private touchMoveAxes = { strafe: 0, forward: 0 }
@@ -111,6 +112,12 @@ export class InputController {
     return this.primaryHeld
   }
 
+  consumeHudToggle(): boolean {
+    const q = this.hudToggleQueued
+    this.hudToggleQueued = false
+    return q
+  }
+
   consumeDebugToggle(): boolean {
     const q = this.debugToggleQueued
     this.debugToggleQueued = false
@@ -183,6 +190,11 @@ export class InputController {
 
     if (event.code === 'KeyE') {
       this.inventoryToggleQueued = true
+    }
+
+    if (event.code === 'F2') {
+      event.preventDefault()
+      this.hudToggleQueued = true
     }
 
     if (event.code === 'F3') {
