@@ -260,6 +260,21 @@ export class VoxelSandboxGame {
       this.debugVisible = !this.debugVisible
       this.debugOverlay.classList.toggle('visible', this.debugVisible)
     }
+    if (this.input.consumePauseToggle()) {
+      if (this.settingsOpen) {
+        this.closeSettings()
+      } else if (this.inventoryOpen) {
+        this.toggleInventory()
+      } else if (this.pauseMenuOpen) {
+        this.resumeGame()
+      } else if (this.gameStarted && this.survival.state.alive) {
+        this.pauseMenuOpen = true
+        this.pauseMenu.classList.add('visible')
+        this.frozenCameraQuat.copy(this.camera.quaternion)
+        this.frozenCameraPos.copy(this.camera.position)
+        if (document.pointerLockElement) document.exitPointerLock()
+      }
+    }
     if (this.input.consumeEscape()) {
       if (this.settingsOpen) {
         this.closeSettings()
