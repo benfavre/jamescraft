@@ -208,9 +208,9 @@ export class VoxelSandboxGame {
 
   /** True when any menu/overlay is open and gameplay should freeze. */
   private isGamePaused(): boolean {
-    return this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
+    return !this.gameStarted
+      || this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen
       || (!this.survival.state.alive && this.settings.survival)
-      || (!this.player.isLocked && !this.input.isTouchMode())
   }
 
   /**
