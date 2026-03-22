@@ -204,6 +204,13 @@ export class InputController {
       return
     }
 
+    // Ignore clicks on HUD/menu elements — only process clicks on the canvas
+    const target = event.target as HTMLElement
+    if (target.closest('.hud') || target.closest('.start-card') || target.closest('.death-screen')
+      || target.closest('.pause-menu') || target.closest('.settings-panel') || target.closest('.inventory-panel')) {
+      return
+    }
+
     if (document.pointerLockElement === null) {
       this.lockPointer()
       return

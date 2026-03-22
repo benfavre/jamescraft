@@ -151,7 +151,11 @@ export class VoxelSandboxGame {
 
     this.survival.state.lastGroundedY = this.player.position.y
 
-    this.input = new InputController(() => this.player.controls.lock())
+    this.input = new InputController(() => {
+      if (this.pauseMenuOpen || this.settingsOpen || this.inventoryOpen) return
+      if (!this.survival.state.alive && this.settings.survival) return
+      this.player.controls.lock()
+    })
     this.mountNode.classList.toggle('touch-mode', this.input.isTouchMode())
     this.readBestRunSeconds()
 
@@ -718,6 +722,11 @@ export class VoxelSandboxGame {
     const locked = this.player.isLocked
 
     if (locked) {
+      // Safety: if player is dead, don't allow pointer lock
+      if (!this.survival.state.alive && this.settings.survival) {
+        this.player.controls.unlock()
+        return
+      }
       // Pointer just locked — hide all menus, game is active
       this.gameStarted = true
       this.startCard.classList.add('hidden')
@@ -889,9 +898,18 @@ export class VoxelSandboxGame {
     const spawn = this.world.getSpawnPoint()
     this.player.teleportTo(spawn)
     this.survival.state.lastGroundedY = spawn.y
+    // Clear ALL menu/overlay state
     this.deathScreen.classList.remove('visible')
     this.pauseMenu.classList.remove('visible')
     this.pauseMenuOpen = false
+    this.settingsPanel.classList.remove('visible')
+    this.settingsOpen = false
+    this.inventoryPanel.classList.remove('visible')
+    this.inventoryOpen = false
+    this.startCard.classList.add('hidden')
+    this.hurtFlashTimer = 0
+    this.breakProgress = 0
+    this.breakingBlock = null
     if (!this.input.isTouchMode()) this.player.controls.lock()
   }
 
