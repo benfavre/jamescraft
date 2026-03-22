@@ -14,6 +14,41 @@ import { traceVoxelRay, type VoxelHit } from './world/DDA'
 import { World } from './world/World'
 import { SkyRenderer } from './world/SkyRenderer'
 
+interface GameSettings {
+  hostileMobs: boolean
+  passiveMobs: boolean
+  dayNightCycle: boolean
+  survival: boolean
+  sound: boolean
+  renderDistance: number
+  fov: number
+  showFps: boolean
+}
+
+const SETTINGS_KEY = 'jamescraft-settings'
+const DEFAULT_SETTINGS: GameSettings = {
+  hostileMobs: true,
+  passiveMobs: true,
+  dayNightCycle: true,
+  survival: true,
+  sound: true,
+  renderDistance: 5,
+  fov: 75,
+  showFps: false,
+}
+
+function loadSettings(): GameSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+  } catch {}
+  return { ...DEFAULT_SETTINGS }
+}
+
+function saveSettings(s: GameSettings): void {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)) } catch {}
+}
+
 export class VoxelSandboxGame {
   private static readonly BEST_RUN_STORAGE_KEY = 'voxel-sandbox-best-run-seconds'
   private readonly scene = new THREE.Scene()
@@ -53,7 +88,12 @@ export class VoxelSandboxGame {
   private readonly hotbarButtons: HTMLButtonElement[] = []
   private readonly celebrationToast = document.createElement('div')
   private readonly boostOverlay = document.createElement('div')
+  private readonly pauseMenu = document.createElement('div')
+  private readonly settingsPanel = document.createElement('div')
   private debugVisible = false
+  private pauseMenuOpen = false
+  private settingsOpen = false
+  private readonly settings: GameSettings
 
   // Survival HUD
   private readonly healthBar = document.createElement('div')
@@ -82,9 +122,12 @@ export class VoxelSandboxGame {
   private stepTimer = 0
 
   constructor(private readonly mountNode: HTMLElement) {
+    this.settings = loadSettings()
     this.mountNode.innerHTML = ''
     this.mountNode.className = 'game-shell'
 
+    this.camera.fov = this.settings.fov
+    this.camera.updateProjectionMatrix()
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.domElement.className = 'game-canvas'
@@ -123,6 +166,7 @@ export class VoxelSandboxGame {
 
     this.stats.showPanel(0)
     this.stats.dom.className = 'stats-panel'
+    this.stats.dom.style.display = this.settings.showFps ? 'block' : 'none'
     this.mountNode.append(this.stats.dom)
 
     this.mountNode.append(this.createHud())
@@ -171,29 +215,33 @@ export class VoxelSandboxGame {
       this.debugVisible = !this.debugVisible
       this.debugOverlay.classList.toggle('visible', this.debugVisible)
     }
+    if (this.input.consumeEscape()) this.togglePauseMenu()
 
     this.handlePlaygroundEvents(this.playground.update(dt, this.player, now / 1000))
     this.trackTimers(dt)
-    this.updateDayNightCycle(dt)
+    if (this.settings.dayNightCycle) this.updateDayNightCycle(dt)
     this.sky.update(this.player.position, this.dayNightTime)
 
     // Mobs
-    const mobResult = this.mobs.update(dt, this.player.position, this.world, this.dayNightTime)
-    if (mobResult.playerDamage > 0 && this.survival.state.alive) {
-      const died = this.survival.takeDamage(mobResult.playerDamage)
-      this.audio.play('hurt')
-      this.hurtFlashTimer = 0.3
-      if (died) this.handleDeath()
-    }
-    for (const drop of mobResult.drops) {
-      this.inventory.addItem(drop.id, ItemType.Food, drop.count)
+    if (this.settings.hostileMobs || this.settings.passiveMobs) {
+      const mobResult = this.mobs.update(dt, this.player.position, this.world, this.dayNightTime,
+        this.settings.hostileMobs, this.settings.passiveMobs)
+      if (mobResult.playerDamage > 0 && this.survival.state.alive && this.settings.survival) {
+        const died = this.survival.takeDamage(mobResult.playerDamage)
+        this.playSound('hurt')
+        this.hurtFlashTimer = 0.3
+        if (died) this.handleDeath()
+      }
+      for (const drop of mobResult.drops) {
+        this.inventory.addItem(drop.id, ItemType.Food, drop.count)
+      }
     }
 
     // Survival
-    if (this.survival.state.alive) {
+    if (this.settings.survival && this.survival.state.alive) {
       const sv = this.survival.update(dt, this.player.position.y, this.player.isGrounded, this.player.inWater)
       if (sv.damaged) {
-        this.audio.play('hurt')
+        this.playSound('hurt')
         this.hurtFlashTimer = 0.3
       }
       if (sv.died) this.handleDeath()
@@ -202,7 +250,7 @@ export class VoxelSandboxGame {
     // Footstep sounds
     if (this.player.isGrounded && Math.hypot(this.player.velocity.x, this.player.velocity.z) > 1) {
       this.stepTimer += dt
-      if (this.stepTimer > 0.4) { this.stepTimer = 0; this.audio.play('step') }
+      if (this.stepTimer > 0.4) { this.stepTimer = 0; this.playSound('step') }
     } else {
       this.stepTimer = 0.3
     }
@@ -265,7 +313,13 @@ export class VoxelSandboxGame {
     startVer.className = 'start-version'
     startVer.textContent = 'JamesCraft v0.2.0'
 
-    this.startCard.append(startTitle, startSub, startBtn, startControls, startVer)
+    const settingsBtn = document.createElement('button')
+    settingsBtn.type = 'button'
+    settingsBtn.className = 'start-button start-button-secondary'
+    settingsBtn.textContent = 'SETTINGS'
+    settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openSettings() })
+
+    this.startCard.append(startTitle, startSub, startBtn, settingsBtn, startControls, startVer)
 
     if (!touchMode) {
       this.startCard.addEventListener('click', () => {
@@ -340,6 +394,33 @@ export class VoxelSandboxGame {
     // ── Inventory Panel ──
     this.inventoryPanel.className = 'inventory-panel'
 
+    // ── Pause Menu ──
+    this.pauseMenu.className = 'pause-menu'
+    this.pauseMenu.innerHTML = '<h2>Game Paused</h2>'
+    const resumeBtn = document.createElement('button')
+    resumeBtn.type = 'button'
+    resumeBtn.className = 'start-button'
+    resumeBtn.textContent = 'RESUME'
+    resumeBtn.addEventListener('click', () => {
+      this.pauseMenuOpen = false
+      this.pauseMenu.classList.remove('visible')
+      if (!this.input.isTouchMode()) this.player.controls.lock()
+    })
+    const pauseSettingsBtn = document.createElement('button')
+    pauseSettingsBtn.type = 'button'
+    pauseSettingsBtn.className = 'start-button start-button-secondary'
+    pauseSettingsBtn.textContent = 'SETTINGS'
+    pauseSettingsBtn.addEventListener('click', () => this.openSettings())
+    const pauseTitleBtn = document.createElement('button')
+    pauseTitleBtn.type = 'button'
+    pauseTitleBtn.className = 'start-button start-button-secondary'
+    pauseTitleBtn.textContent = 'TITLE SCREEN'
+    pauseTitleBtn.addEventListener('click', () => window.location.reload())
+    this.pauseMenu.append(resumeBtn, pauseSettingsBtn, pauseTitleBtn)
+
+    // ── Settings Panel ──
+    this.settingsPanel.className = 'settings-panel'
+
     // ── Toasts & Overlays ──
     this.celebrationToast.className = 'celebration-toast'
     this.celebrationToast.setAttribute('aria-live', 'polite')
@@ -358,6 +439,7 @@ export class VoxelSandboxGame {
       this.celebrationToast, this.boostOverlay,
       this.hotbar, crosshair,
       this.deathScreen, this.inventoryPanel,
+      this.pauseMenu, this.settingsPanel,
       breakBar, hurtOverlay,
     )
 
@@ -456,7 +538,7 @@ export class VoxelSandboxGame {
 
         if (this.breakProgress >= 1) {
           this.world.setBlock(bx, by, bz, BlockId.Air)
-          this.audio.play('break')
+          this.playSound('break')
 
           // Drop as item (stone drops cobblestone)
           let dropId = blockId as number
@@ -495,7 +577,7 @@ export class VoxelSandboxGame {
           dmg = [4, 5, 6, 7][item.toolTier ?? 0]
         }
         if (this.mobs.hitMob(this.player.getInteractionOrigin(), this.player.getLookDirection(), MAX_INTERACTION_DISTANCE, dmg)) {
-          this.audio.play('mobHit')
+          this.playSound('mobHit')
           if (item?.type === ItemType.Tool) this.inventory.damageTool(this.selectedSlot)
         }
       }
@@ -510,7 +592,7 @@ export class VoxelSandboxGame {
       if (this.blockWouldOverlapPlayer(pp)) return
 
       this.world.setBlock(pp.x, pp.y, pp.z, nextBlock)
-      this.audio.play('place')
+      this.playSound('place')
       this.effects.spawnBurst({
         count: 8,
         origin: new THREE.Vector3(pp.x + 0.5, pp.y + 0.5, pp.z + 0.5),
@@ -560,11 +642,14 @@ export class VoxelSandboxGame {
     }
 
     // Death screen
-    this.deathScreen.classList.toggle('visible', !this.survival.state.alive)
+    this.deathScreen.classList.toggle('visible', !this.survival.state.alive && this.settings.survival)
 
-    // Low health shake
+    // Low health shake / hide survival HUD
     const survHud = document.getElementById('survival-hud')
-    if (survHud) survHud.classList.toggle('low-health', this.survival.state.health <= 4 && this.survival.state.alive)
+    if (survHud) {
+      survHud.classList.toggle('low-health', this.survival.state.health <= 4 && this.survival.state.alive && this.settings.survival)
+      survHud.style.display = this.settings.survival ? '' : 'none'
+    }
 
     // Hotbar
     this.hotbarButtons.forEach((btn, i) => {
@@ -626,7 +711,7 @@ export class VoxelSandboxGame {
   private handlePlaygroundEvents(events: PlaygroundEvent[]): void {
     for (const event of events) {
       if (event.type === 'star-collected') {
-        this.audio.play('star')
+        this.playSound('star')
         this.effects.spawnBurst({
           count: 12, origin: this.player.position.clone().add(new THREE.Vector3(0, 0.2, 0)),
           colors: ['#ffe56f', '#fff7c2', '#ffd166'], speed: [2.4, 4.8], spread: 0.65, lifetime: [0.45, 0.8], scale: [0.08, 0.14], gravity: 6,
@@ -635,21 +720,21 @@ export class VoxelSandboxGame {
         this.showCelebration(`Stars ${event.collected}/${event.total}`)
       }
       if (event.type === 'pad-used') {
-        this.audio.play('boost')
+        this.playSound('boost')
         this.boostOverlayTimer = Math.max(this.boostOverlayTimer, 0.65)
         this.completedMissions.add('pad')
       }
       if (event.type === 'ring-cleared') {
-        this.audio.play('ring')
+        this.playSound('ring')
         this.completedMissions.add('ring')
         this.showCelebration('Ring cleared!')
       }
-      if (event.type === 'crate-smashed') { this.audio.play('smash'); this.completedMissions.add('crate') }
-      if (event.type === 'bridge-complete') { this.audio.play('bridge'); this.completedMissions.add('bridge') }
+      if (event.type === 'crate-smashed') { this.playSound('smash'); this.completedMissions.add('crate') }
+      if (event.type === 'bridge-complete') { this.playSound('bridge'); this.completedMissions.add('bridge') }
       if (event.type === 'goal-reached') {
         this.completedMissions.add('goal')
         this.courseFinished = true
-        this.audio.play('victory')
+        this.playSound('victory')
         this.showCelebration('Course complete!')
       }
     }
@@ -735,7 +820,7 @@ export class VoxelSandboxGame {
   }
 
   private handleDeath(): void {
-    this.audio.play('die')
+    this.playSound('die')
     this.hurtFlashTimer = 1.0
     const scoreEl = this.deathScreen.querySelector('#death-score')
     if (scoreEl) scoreEl.textContent = Math.floor(this.runSeconds).toString()
@@ -864,6 +949,129 @@ export class VoxelSandboxGame {
 
   private readBestRunSeconds(): number {
     try { const v = window.localStorage.getItem(VoxelSandboxGame.BEST_RUN_STORAGE_KEY); return v ? Number(v) || Infinity : Infinity } catch { return Infinity }
+  }
+
+  private playSound(cue: Parameters<GameAudio['play']>[0]): void {
+    if (this.settings.sound) this.audio.play(cue)
+  }
+
+  private togglePauseMenu(): void {
+    if (this.settingsOpen) {
+      this.closeSettings()
+      return
+    }
+    if (this.inventoryOpen) {
+      this.toggleInventory()
+      return
+    }
+    this.pauseMenuOpen = !this.pauseMenuOpen
+    this.pauseMenu.classList.toggle('visible', this.pauseMenuOpen)
+    if (this.pauseMenuOpen && this.player.isLocked) this.player.controls.unlock()
+  }
+
+  private openSettings(): void {
+    this.settingsOpen = true
+    this.pauseMenu.classList.remove('visible')
+    this.pauseMenuOpen = false
+    this.startCard.classList.add('hidden')
+    this.settingsPanel.classList.add('visible')
+    this.renderSettings()
+  }
+
+  private closeSettings(): void {
+    this.settingsOpen = false
+    this.settingsPanel.classList.remove('visible')
+    // Return to wherever we came from
+    if (!this.player.isLocked && !this.input.isTouchMode()) {
+      this.startCard.classList.remove('hidden')
+    }
+  }
+
+  private renderSettings(): void {
+    const s = this.settings
+    const toggle = (label: string, key: keyof GameSettings, desc: string) => {
+      const checked = s[key] ? 'checked' : ''
+      return `<label class="setting-row">
+        <div class="setting-info"><span class="setting-label">${label}</span><span class="setting-desc">${desc}</span></div>
+        <input type="checkbox" class="setting-toggle" data-key="${key}" ${checked}>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>`
+    }
+    const slider = (label: string, key: keyof GameSettings, min: number, max: number, step: number, unit: string, desc: string) => {
+      return `<label class="setting-row">
+        <div class="setting-info"><span class="setting-label">${label}</span><span class="setting-desc">${desc}</span></div>
+        <div class="setting-slider-wrap">
+          <input type="range" class="setting-slider" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${s[key]}">
+          <span class="setting-value">${s[key]}${unit}</span>
+        </div>
+      </label>`
+    }
+
+    this.settingsPanel.innerHTML = `
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button class="inv-close settings-back" type="button">&times;</button>
+      </div>
+      <div class="settings-body">
+        <p class="settings-section">Gameplay</p>
+        ${toggle('Survival Mode', 'survival', 'Health, hunger, and fall damage')}
+        ${toggle('Hostile Mobs', 'hostileMobs', 'Zombies, skeletons, creepers at night')}
+        ${toggle('Passive Mobs', 'passiveMobs', 'Pigs and cows roaming the world')}
+        ${toggle('Day/Night Cycle', 'dayNightCycle', 'Turn off to keep it always daytime')}
+        <p class="settings-section">Audio & Display</p>
+        ${toggle('Sound Effects', 'sound', 'All game sounds')}
+        ${toggle('Show FPS', 'showFps', 'FPS counter in top-right corner')}
+        ${slider('Field of View', 'fov', 50, 110, 5, '', 'Camera FOV in degrees')}
+        ${slider('Render Distance', 'renderDistance', 3, 8, 1, ' chunks', 'Higher = see further, lower = better FPS')}
+      </div>
+    `
+
+    // Close button
+    this.settingsPanel.querySelector('.settings-back')?.addEventListener('click', () => this.closeSettings())
+
+    // Toggle handlers
+    this.settingsPanel.querySelectorAll<HTMLInputElement>('.setting-toggle').forEach(input => {
+      input.addEventListener('change', () => {
+        const key = input.dataset.key as keyof GameSettings
+        ;(this.settings as unknown as Record<string, boolean | number>)[key] = input.checked
+        this.applySettings()
+      })
+    })
+
+    // Slider handlers
+    this.settingsPanel.querySelectorAll<HTMLInputElement>('.setting-slider').forEach(input => {
+      input.addEventListener('input', () => {
+        const key = input.dataset.key as keyof GameSettings
+        ;(this.settings as unknown as Record<string, boolean | number>)[key] = Number(input.value)
+        const valSpan = input.parentElement?.querySelector('.setting-value')
+        if (valSpan) valSpan.textContent = input.value + (key === 'renderDistance' ? ' chunks' : '')
+        this.applySettings()
+      })
+    })
+  }
+
+  private applySettings(): void {
+    saveSettings(this.settings)
+
+    // FOV
+    this.camera.fov = this.settings.fov
+    this.camera.updateProjectionMatrix()
+
+    // FPS counter
+    this.stats.dom.style.display = this.settings.showFps ? 'block' : 'none'
+
+    // Day/night: if disabled, force to midday
+    if (!this.settings.dayNightCycle) {
+      this.dayNightTime = 0.25
+      this.updateDayNightCycle(0)
+    }
+
+    // Survival: if disabled, keep health full
+    if (!this.settings.survival) {
+      this.survival.state.health = this.survival.state.maxHealth
+      this.survival.state.hunger = this.survival.state.maxHunger
+      this.survival.state.alive = true
+    }
   }
 
   private blockWouldOverlapPlayer(bp: THREE.Vector3): boolean {

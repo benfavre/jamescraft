@@ -62,14 +62,22 @@ export class MobSystem {
     scene.add(this.root)
   }
 
-  update(dt: number, playerPos: THREE.Vector3, world: World, dayTime: number): { playerDamage: number; drops: { id: number; count: number; pos: THREE.Vector3 }[] } {
+  update(dt: number, playerPos: THREE.Vector3, world: World, dayTime: number,
+    hostileEnabled = true, passiveEnabled = true): { playerDamage: number; drops: { id: number; count: number; pos: THREE.Vector3 }[] } {
     let playerDamage = 0
     const drops: { id: number; count: number; pos: THREE.Vector3 }[] = []
 
     this.spawnTimer += dt
     if (this.spawnTimer >= 4 && this.mobs.length < this.maxMobs) {
       this.spawnTimer = 0
-      this.trySpawn(playerPos, world, dayTime)
+      this.trySpawn(playerPos, world, dayTime, hostileEnabled, passiveEnabled)
+    }
+
+    // Remove mobs of disabled types
+    for (let i = this.mobs.length - 1; i >= 0; i--) {
+      const m = this.mobs[i]
+      if (m.def.hostile && !hostileEnabled) { this.remove(i); continue }
+      if (!m.def.hostile && !passiveEnabled) { this.remove(i); continue }
     }
 
     for (let i = this.mobs.length - 1; i >= 0; i--) {
@@ -197,7 +205,7 @@ export class MobSystem {
     return false
   }
 
-  private trySpawn(pp: THREE.Vector3, world: World, dayTime: number): void {
+  private trySpawn(pp: THREE.Vector3, world: World, dayTime: number, hostileOk: boolean, passiveOk: boolean): void {
     const isNight = Math.sin(dayTime * Math.PI * 2) < -0.1
     const angle = Math.random() * Math.PI * 2
     const dist = 16 + Math.random() * 24
@@ -207,11 +215,16 @@ export class MobSystem {
     if (gy <= 1) return
 
     let type: MobType
-    if (isNight && Math.random() < 0.55) {
+    if (isNight && Math.random() < 0.55 && hostileOk) {
+      const h = [MobType.Zombie, MobType.Skeleton, MobType.Creeper]
+      type = h[Math.floor(Math.random() * h.length)]
+    } else if (passiveOk) {
+      type = Math.random() < 0.5 ? MobType.Pig : MobType.Cow
+    } else if (hostileOk && isNight) {
       const h = [MobType.Zombie, MobType.Skeleton, MobType.Creeper]
       type = h[Math.floor(Math.random() * h.length)]
     } else {
-      type = Math.random() < 0.5 ? MobType.Pig : MobType.Cow
+      return
     }
 
     const def = DEFS[type]

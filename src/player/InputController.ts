@@ -8,6 +8,7 @@ export class InputController {
   private cameraToggleQueued = false
   private inventoryToggleQueued = false
   private debugToggleQueued = false
+  private escapeQueued = false
   private readonly touchMode = isTouchUiPreferred()
   private touchMoveAxes = { strafe: 0, forward: 0 }
   private touchLookDelta = { x: 0, y: 0 }
@@ -116,6 +117,12 @@ export class InputController {
     return q
   }
 
+  consumeEscape(): boolean {
+    const q = this.escapeQueued
+    this.escapeQueued = false
+    return q
+  }
+
   setTouchMoveAxes(strafe: number, forward: number): void {
     this.touchMoveAxes.strafe = strafe
     this.touchMoveAxes.forward = forward
@@ -181,6 +188,10 @@ export class InputController {
     if (event.code === 'F3') {
       event.preventDefault()
       this.debugToggleQueued = true
+    }
+
+    if (event.code === 'Escape') {
+      this.escapeQueued = true
     }
   }
 
