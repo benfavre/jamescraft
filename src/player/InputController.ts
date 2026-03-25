@@ -4,6 +4,7 @@ export class InputController {
   private readonly slotQueue: number[] = []
   private primaryActionQueued = false
   private primaryHeld = false
+  private touchPrimaryHeld = false
   private secondaryActionQueued = false
   private cameraToggleQueued = false
   private inventoryToggleQueued = false
@@ -45,7 +46,7 @@ export class InputController {
   }
 
   isSneaking(): boolean {
-    return this.pressed.has('ShiftLeft') || this.touchSneaking
+    return this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight') || this.touchSneaking
   }
 
   getMoveAxes(): { strafe: number; forward: number } {
@@ -110,7 +111,7 @@ export class InputController {
   }
 
   isPrimaryHeld(): boolean {
-    return this.primaryHeld
+    return this.primaryHeld || this.touchPrimaryHeld
   }
 
   consumePauseToggle(): boolean {
@@ -155,6 +156,10 @@ export class InputController {
     this.primaryActionQueued = true
   }
 
+  setTouchPrimaryHeld(active: boolean): void {
+    this.touchPrimaryHeld = active
+  }
+
   queueTouchSecondaryAction(): void {
     this.secondaryActionQueued = true
   }
@@ -165,6 +170,20 @@ export class InputController {
 
   setTouchSneaking(active: boolean): void {
     this.touchSneaking = active
+  }
+
+  clearGameplayInputs(): void {
+    this.slotQueue.length = 0
+    this.primaryActionQueued = false
+    this.primaryHeld = false
+    this.touchPrimaryHeld = false
+    this.secondaryActionQueued = false
+    this.cameraToggleQueued = false
+    this.touchMoveAxes.strafe = 0
+    this.touchMoveAxes.forward = 0
+    this.touchLookDelta.x = 0
+    this.touchLookDelta.y = 0
+    this.touchSneaking = false
   }
 
   endFrame(): void {

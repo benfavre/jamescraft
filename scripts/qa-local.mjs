@@ -52,19 +52,27 @@ try {
 
   const [targetX, targetY, targetZ] = targetState.target.block
 
-  await page.mouse.down({ button: 'left' })
-  await page.mouse.up({ button: 'left' })
+  await triggerCanvasMouse(page, 0, 'down')
   await page.waitForFunction(
     ([x, y, z]) => window.__VOXEL_DEBUG__?.peekBlock(x, y, z) === 0,
     [targetX, targetY, targetZ],
   )
+  await triggerCanvasMouse(page, 0, 'up')
 
-  await page.keyboard.press('Digit5')
-  await page.mouse.down({ button: 'right' })
-  await page.mouse.up({ button: 'right' })
+  const placeState = await readDebugState(page)
+
+  if (!placeState.target) {
+    throw new Error('No placement target after break')
+  }
+
+  const placeTarget = placeState.target.adjacent
+
+  await page.keyboard.press('Digit7')
+  await triggerCanvasMouse(page, 2, 'down')
+  await triggerCanvasMouse(page, 2, 'up')
   await page.waitForFunction(
     ([x, y, z]) => window.__VOXEL_DEBUG__?.peekBlock(x, y, z) === 5,
-    [targetX, targetY, targetZ],
+    placeTarget,
   )
 
   await page.screenshot({ path: screenshotPath, fullPage: true })
@@ -81,4 +89,30 @@ async function readDebugState(page) {
   }
 
   return state
+}
+
+async function triggerCanvasMouse(page, button, phase) {
+  await page.evaluate(
+    ({ currentButton, currentPhase }) => {
+      const canvas = document.querySelector('.game-canvas')
+
+      if (!(canvas instanceof HTMLElement)) {
+        throw new Error('Missing .game-canvas')
+      }
+
+      const rect = canvas.getBoundingClientRect()
+      const clientX = rect.left + rect.width / 2
+      const clientY = rect.top + rect.height / 2
+
+      canvas.dispatchEvent(
+        new MouseEvent(`mouse${currentPhase}`, {
+          button: currentButton,
+          bubbles: true,
+          clientX,
+          clientY,
+        }),
+      )
+    },
+    { currentButton: button, currentPhase: phase },
+  )
 }

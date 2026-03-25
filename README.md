@@ -1,103 +1,145 @@
-# voxel-sandbox-threejs
+# JamesCraft
 
-ブラウザで即遊べる Minecraft 風ボクセルサンドボックスです。Three.js r183、Vite、Pointer Lock、一人称移動、DDA ブロック選択、チャンクメッシュ最適化、AABB 物理に加えて、スマホ向けタッチ操作と Roblox 風のブロッキーな三人称アバターを実装しています。
+JamesCraft is a browser-based voxel survival game built with Three.js, Vite, and TypeScript. It includes procedural terrain, biomes, caves and ores, a day/night cycle, mobs, block editing, and UI that works on both desktop and mobile.
 
-公開 URL: https://awano27.github.io/voxel-sandbox-threejs/
+The current playable scope covers exploration, mining, building, combat, and survival HUD systems. The full crafting and smelting loop is still in progress.
 
-![Gameplay screenshot](./docs/public-playwright-check.png)
+![Desktop gameplay](./docs/public-playwright-check.png)
+![Mobile gameplay](./docs/mobile-playwright-check.png)
 
-## Features
+## Implemented
 
-- Three.js + Vite + TypeScript 構成
-- 16 x 16 x 64 チャンクと面カリング済み merged geometry
-- Simplex Noise ベースの自然地形
-- PointerLockControls による一人称視点
-- Roblox 風のブロッキーなアバターと歩行アニメーション
-- `V` キー / `CAM` ボタンで一人称と三人称を切り替え
-- スマホ向け仮想スティック、LOOK パッド、JUMP / BREAK / PLACE / SNEAK ボタン
-- 重力、ジャンプ、AABB 衝突判定
-- DDA による精密なブロック選択
-- 左クリック破壊、右クリック設置
-- 1-5 キーで Grass / Dirt / Stone / Wood / Glass を切り替え
-- Stats.js による FPS 表示
+- Three.js r183 + Vite + TypeScript
+- 16 x 16 x 128 chunks with face-culled chunk meshes and chunk load/unload
+- Simplex noise terrain generation
+- 8 biomes: Plains, Forest, Desert, Tundra, Mountains, Swamp, Taiga, and Birch Forest
+- Trees, caves, water, lava, and coal / iron / gold / diamond ore generation
+- First-person and third-person camera modes with a blocky player avatar
+- Gravity, jumping, sneaking, swimming, and AABB collision
+- DDA-based block targeting with break and place interactions
+- 9-slot build bar, inventory screen, pause/settings/death UI
+- Hearts, hunger, fall damage, death, and respawn
+- Simple AI for pigs, cows, zombies, skeletons, and creepers
+- Web Audio API sound effects
+- `localStorage` persistence for settings and player block edits
+- A spawn-area playground with stars, jump pads, rings, and bridge objectives
 
 ## Controls
 
-PC:
+Desktop:
 
-- Click: Pointer Lock 開始
-- ESC: Pointer Lock 解除
-- WASD: 移動
-- Shift: スニーク
-- Space: ジャンプ
-- 左クリック / 右クリック: 破壊 / 設置
-- 1-5: ブロック切替
-- V: 一人称 / 三人称
+- `Click` or `SINGLEPLAYER`: start the game / enter pointer lock
+- `WASD`: move
+- `Space`: jump
+- `Shift`: sneak
+- `Left Click`: primary action
+- `Hold Left Click`: continue breaking a block
+- `Right Click`: place a block
+- `1-9`: switch build-bar slot
+- `E`: open inventory
+- `V`: toggle first-person / third-person
+- `P`: pause
+- `Esc`: release pointer lock / return to menu
+- `F2`: toggle HUD
+- `F3`: toggle debug overlay
 
 Mobile:
 
-- 左スティック: 移動
-- 右 LOOK: 視点移動
-- JUMP: ジャンプ
-- BREAK: ブロック破壊
-- PLACE: ブロック設置
-- SNEAK: スニーク
-- CAM: 一人称 / 三人称
-- ホットバータップ: ブロック切替
+- `PLAY`: start the game
+- Left joystick: move
+- `LOOK` zone: look around
+- `JUMP`: jump
+- `BREAK`: primary action
+- `PLACE`: secondary action
+- `SNEAK`: sneak
+- `CAM`: toggle first-person / third-person
+- `BLOCKS`: expand and switch the build bar
 
 ## Local Development
+
+CI uses Node.js 24. Using a similar local version is recommended.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Vite は `http://127.0.0.1:5173` で起動します。
+The Vite dev server runs at `http://127.0.0.1:5173`.
+
+```bash
+npm run build
+npm run preview
+```
 
 ## Playwright QA
 
-ローカル確認:
+If Playwright browsers are not installed yet, run this once:
+
+```bash
+npx playwright install chromium
+```
+
+Local desktop smoke test:
 
 ```bash
 npm run dev
 npm run qa:local
 ```
 
-モバイル確認:
+Mobile smoke test:
 
 ```bash
 npm run dev
 npm run qa:mobile
 ```
 
-公開 URL 確認:
+Public build check:
 
 ```bash
 npm run qa:public
 ```
 
-生成されたスクリーンショットは `docs/` 配下に保存されます。
+- `qa:local` verifies core desktop interactions.
+- `qa:mobile` verifies the touch UI using iPhone 13 emulation.
+- `qa:public` defaults to `https://awano27.github.io/voxel-sandbox-threejs/`.
+- `TARGET_URL` and `SCREENSHOT_PATH` can be overridden with environment variables.
+- Generated screenshots are saved under `docs/`.
 
 ## Deployment
 
-`main` ブランチに push すると GitHub Actions が `npm run build` を実行し、成果物を `gh-pages` ブランチへ自動デプロイします。
+Pushing to `main` triggers GitHub Actions to run `npm ci`, build the project with `npm run build`, and publish `dist/` to the `gh-pages` branch.
 
-## Project Structure
+If you change the GitHub Pages path, update at least these two places together:
+
+- `vite.config.ts` `base`
+- `scripts/qa-public.mjs` default `TARGET_URL`
+
+## Directory Structure
 
 ```text
 src/
   main.ts
   VoxelSandboxGame.ts
+  constants.ts
+  gameplay/
+    FeedbackEffects.ts
+    GameAudio.ts
+    Inventory.ts
+    MobSystem.ts
+    Playground.ts
+    Survival.ts
   player/
     InputController.ts
     Player.ts
     PlayerAvatar.ts
   world/
+    Biome.ts
     BlockTypes.ts
     Chunk.ts
     ChunkManager.ts
     DDA.ts
     SimplexNoise.ts
+    SkyRenderer.ts
     TerrainGenerator.ts
     VoxelMeshBuilder.ts
     World.ts
@@ -105,4 +147,8 @@ scripts/
   qa-local.mjs
   qa-mobile.mjs
   qa-public.mjs
+docs/
+  local-playwright-check.png
+  mobile-playwright-check.png
+  public-playwright-check.png
 ```

@@ -9,4 +9,12 @@ if (!app) {
 
 const game = new VoxelSandboxGame(app)
 
-window.addEventListener('beforeunload', () => game.dispose())
+window.__VOXEL_DEBUG__ = {
+  getState: () => game.getDebugState(),
+  peekBlock: (x: number, y: number, z: number) => game.peekBlock(x, y, z),
+}
+
+window.addEventListener('beforeunload', () => {
+  delete window.__VOXEL_DEBUG__
+  game.dispose()
+})

@@ -94,6 +94,7 @@ export class VoxelSandboxGame {
   private hudVisible = true
   private pauseMenuOpen = false
   private settingsOpen = false
+  private settingsReturnToPauseMenu = false
   private gameStarted = false
   private readonly settings: GameSettings
 
@@ -247,12 +248,20 @@ export class VoxelSandboxGame {
 
     this.stats.begin()
 
+    if (!this.input.isTouchMode() && this.player.isLocked && !this.gameStarted) {
+      this.syncLockState()
+    }
+
     // ── Menu input (always processed) ──
     if (this.input.consumeHudToggle()) {
       this.hudVisible = !this.hudVisible
       this.mountNode.classList.toggle('hud-hidden', !this.hudVisible)
     }
-    if (this.input.consumeInventoryToggle()) this.toggleInventory()
+    if (this.input.consumeInventoryToggle()) {
+      if (this.inventoryOpen || this.canOpenInventory()) {
+        this.toggleInventory()
+      }
+    }
     if (this.input.consumeDebugToggle()) {
       this.debugVisible = !this.debugVisible
       this.debugOverlay.classList.toggle('visible', this.debugVisible)
@@ -265,11 +274,7 @@ export class VoxelSandboxGame {
       } else if (this.pauseMenuOpen) {
         this.resumeGame()
       } else if (this.gameStarted && this.survival.state.alive) {
-        this.pauseMenuOpen = true
-        this.pauseMenu.classList.add('visible')
-        this.frozenCameraQuat.copy(this.camera.quaternion)
-        this.frozenCameraPos.copy(this.camera.position)
-        if (document.pointerLockElement) document.exitPointerLock()
+        this.openPauseMenu()
       }
     }
     if (this.input.consumeEscape()) {
@@ -344,11 +349,7 @@ export class VoxelSandboxGame {
       this.applyBlockEditing(dt)
       this.effects.update(dt)
     } else {
-      // Discard all gameplay inputs while paused
-      this.input.consumeSlotSelection()
-      this.input.consumeCameraToggle()
-      this.input.consumePrimaryAction()
-      this.input.consumeSecondaryAction()
+      this.input.clearGameplayInputs()
     }
 
     this.updateHud()
@@ -432,6 +433,7 @@ export class VoxelSandboxGame {
       const def = getBlockDefinition(block)
       const btn = document.createElement('button')
       btn.type = 'button'
+      btn.id = `slot-${index + 1}`
       btn.className = 'hslot'
       const swatch = document.createElement('div')
       swatch.className = 'hslot-swatch'
@@ -770,6 +772,7 @@ export class VoxelSandboxGame {
   }
 
   private updateSelectedSlot(index: number): void {
+    if (index < 0 || index >= HOTBAR_BLOCKS.length) return
     this.selectedSlot = index
     this.hotbarButtons.forEach((btn, i) => btn.classList.toggle('active', i === index))
     this.refreshMobileBlockToggle()
@@ -778,6 +781,7 @@ export class VoxelSandboxGame {
 
   private readonly syncLockState = (): void => {
     if (this.input.isTouchMode()) {
+      this.gameStarted = this.mobileIntroDismissed
       this.startCard.classList.toggle('hidden', this.mobileIntroDismissed)
       return
     }
@@ -1076,8 +1080,40 @@ export class VoxelSandboxGame {
     const jumpBtn = actions.querySelector<HTMLButtonElement>('#action-jump')!
     const sneakBtn = actions.querySelector<HTMLButtonElement>('#action-sneak')!
     const camBtn = actions.querySelector<HTMLButtonElement>('#action-camera')!
-    const tap = (b: HTMLButtonElement, h: () => void) => { b.addEventListener('pointerdown', (e) => { e.preventDefault(); this.dismissMobileIntro(); h() }) }
-    tap(breakBtn, () => this.input.queueTouchPrimaryAction())
+
+    const tap = (b: HTMLButtonElement, h: () => void) => {
+      b.addEventListener('pointerdown', (e) => {
+        e.preventDefault()
+        this.dismissMobileIntro()
+        h()
+      })
+    }
+
+    let bpid: number | null = null
+    breakBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      this.dismissMobileIntro()
+      bpid = e.pointerId
+      breakBtn.classList.add('active')
+      this.input.queueTouchPrimaryAction()
+      this.input.setTouchPrimaryHeld(true)
+      try { breakBtn.setPointerCapture(e.pointerId) } catch {}
+    })
+    const relBreak = (e: PointerEvent) => {
+      if (bpid !== e.pointerId) return
+      bpid = null
+      breakBtn.classList.remove('active')
+      this.input.setTouchPrimaryHeld(false)
+      try { breakBtn.releasePointerCapture(e.pointerId) } catch {}
+    }
+    breakBtn.addEventListener('pointerup', relBreak)
+    breakBtn.addEventListener('pointercancel', relBreak)
+    breakBtn.addEventListener('lostpointercapture', () => {
+      bpid = null
+      breakBtn.classList.remove('active')
+      this.input.setTouchPrimaryHeld(false)
+    })
+
     tap(placeBtn, () => this.input.queueTouchSecondaryAction())
     tap(jumpBtn, () => this.input.queueTouchJump())
     tap(camBtn, () => this.input.queueTouchCameraToggle())
@@ -1094,6 +1130,7 @@ export class VoxelSandboxGame {
     if (!this.input.isTouchMode() || this.mobileIntroDismissed) return
     this.audio.unlock()
     this.mobileIntroDismissed = true
+    this.gameStarted = true
     this.syncLockState()
   }
 
@@ -1116,6 +1153,7 @@ export class VoxelSandboxGame {
   }
 
   private openSettings(): void {
+    this.settingsReturnToPauseMenu = this.pauseMenuOpen
     this.settingsOpen = true
     this.pauseMenu.classList.remove('visible')
     this.pauseMenuOpen = false
@@ -1130,12 +1168,13 @@ export class VoxelSandboxGame {
   private closeSettings(): void {
     this.settingsOpen = false
     this.settingsPanel.classList.remove('visible')
+    const returnToPauseMenu = this.settingsReturnToPauseMenu
+    this.settingsReturnToPauseMenu = false
 
     if (!this.gameStarted) {
       // Came from start screen — show it again
       this.startCard.classList.remove('hidden')
-    } else if (!this.player.isLocked && !this.input.isTouchMode()) {
-      // Came from pause menu — show it again
+    } else if (returnToPauseMenu) {
       this.pauseMenuOpen = true
       this.pauseMenu.classList.add('visible')
     }
@@ -1235,5 +1274,57 @@ export class VoxelSandboxGame {
       py - PLAYER_EYE_HEIGHT < bp.y + 1 && py - PLAYER_EYE_HEIGHT + PLAYER_HEIGHT > bp.y &&
       pz - PLAYER_HALF_WIDTH < bp.z + 1 && pz + PLAYER_HALF_WIDTH > bp.z
     )
+  }
+
+  getDebugState(): {
+    ready: boolean
+    locked: boolean
+    touchMode: boolean
+    cameraMode: 'first-person' | 'third-person'
+    selectedSlot: number
+    selectedBlock: string
+    loadedChunks: number
+    player: { x: number; y: number; z: number }
+    target: { block: number[]; adjacent: number[]; distance: number } | null
+    playground: Playground['getState'] extends () => infer T ? T : never
+  } {
+    const pos = this.player.position
+    return {
+      ready: true,
+      locked: this.player.isLocked,
+      touchMode: this.input.isTouchMode(),
+      cameraMode: this.player.currentCameraMode,
+      selectedSlot: this.selectedSlot,
+      selectedBlock: getBlockDefinition(HOTBAR_BLOCKS[this.selectedSlot]).label,
+      loadedChunks: this.world.getLoadedChunkCount(),
+      player: { x: pos.x, y: pos.y, z: pos.z },
+      target: this.currentTarget
+        ? {
+            block: [this.currentTarget.block.x, this.currentTarget.block.y, this.currentTarget.block.z],
+            adjacent: [this.currentTarget.adjacent.x, this.currentTarget.adjacent.y, this.currentTarget.adjacent.z],
+            distance: this.currentTarget.distance,
+          }
+        : null,
+      playground: this.playground.getState(),
+    }
+  }
+
+  peekBlock(x: number, y: number, z: number): number {
+    return this.world.getBlock(x, y, z)
+  }
+
+  private canOpenInventory(): boolean {
+    return this.gameStarted
+      && (!this.settings.survival || this.survival.state.alive)
+      && !this.pauseMenuOpen
+      && !this.settingsOpen
+  }
+
+  private openPauseMenu(): void {
+    this.pauseMenuOpen = true
+    this.pauseMenu.classList.add('visible')
+    this.frozenCameraQuat.copy(this.camera.quaternion)
+    this.frozenCameraPos.copy(this.camera.position)
+    if (document.pointerLockElement) document.exitPointerLock()
   }
 }

@@ -15,7 +15,7 @@ try {
     const state = window.__VOXEL_DEBUG__?.getState()
     return Boolean(state && state.touchMode && state.loadedChunks > 0)
   })
-  const startButton = page.getByRole('button', { name: 'START PLAYING' })
+  const startButton = page.getByRole('button', { name: /PLAY|START PLAYING/i })
 
   if (await startButton.isVisible()) {
     await startButton.click()
@@ -65,18 +65,26 @@ try {
 
   const [targetX, targetY, targetZ] = targetState.target.block
 
-  await page.locator('#action-break').click()
+  await holdControl(page, '#action-break', 1200)
   await page.waitForFunction(
     ([x, y, z]) => window.__VOXEL_DEBUG__?.peekBlock(x, y, z) === 0,
     [targetX, targetY, targetZ],
   )
 
+  const placeState = await readDebugState(page)
+
+  if (!placeState.target) {
+    throw new Error('No placement target after mobile break')
+  }
+
+  const placeTarget = placeState.target.adjacent
+
   await page.locator('#mobile-block-toggle').click()
-  await page.locator('#slot-5').click()
+  await page.locator('#slot-7').click()
   await page.locator('#action-place').click()
   await page.waitForFunction(
     ([x, y, z]) => window.__VOXEL_DEBUG__?.peekBlock(x, y, z) === 5,
-    [targetX, targetY, targetZ],
+    placeTarget,
   )
 
   await page.screenshot({ path: screenshotPath, fullPage: true })
@@ -139,6 +147,54 @@ async function dragControl(page, selector, delta, holdMs) {
         pointerType: 'touch',
         clientX: endX,
         clientY: endY,
+        bubbles: true,
+      }),
+    )
+  }, selector)
+}
+
+async function holdControl(page, selector, holdMs) {
+  await page.evaluate((currentSelector) => {
+    const element = document.querySelector(currentSelector)
+
+    if (!(element instanceof HTMLElement)) {
+      throw new Error(`Missing element: ${currentSelector}`)
+    }
+
+    const rect = element.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+
+    element.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        pointerId: 52,
+        pointerType: 'touch',
+        clientX: x,
+        clientY: y,
+        bubbles: true,
+      }),
+    )
+  }, selector)
+
+  await page.waitForTimeout(holdMs)
+
+  await page.evaluate((currentSelector) => {
+    const element = document.querySelector(currentSelector)
+
+    if (!(element instanceof HTMLElement)) {
+      throw new Error(`Missing element: ${currentSelector}`)
+    }
+
+    const rect = element.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+
+    element.dispatchEvent(
+      new PointerEvent('pointerup', {
+        pointerId: 52,
+        pointerType: 'touch',
+        clientX: x,
+        clientY: y,
         bubbles: true,
       }),
     )
